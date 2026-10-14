@@ -77,11 +77,20 @@
     return text_wider_than_cell(desc.textContent, cell, desc);
   }
 
+  function title_row_wraps(row) {
+    var titleEl = row.querySelector('.epg_title');
+    var cell = row.querySelector('.col_title');
+    if (!titleEl || !cell || !titleEl.textContent) return false;
+    return text_wider_than_cell(titleEl.textContent, cell, titleEl);
+  }
+
   function sync_whatson_row_lines() {
     requestAnimationFrame(function() {
       document.querySelectorAll('#whatson #list tbody tr.row_alt').forEach(function(row) {
         var channelWraps = channel_row_wraps(row);
+        var titleWraps = title_row_wraps(row);
         row.classList.toggle('channel-wraps', channelWraps);
+        row.classList.toggle('title-wraps', titleWraps);
         row.classList.toggle('desc-wraps', desc_row_wraps(row, channelWraps));
       });
     });
@@ -117,7 +126,7 @@
           s += `<img src="${tvh_url(c.icon_public_url)}" class="channel-icon" alt="${name}" title="${name}">`;
         }
 	else s += `<span class="channel_label">${name}</span>`;
-	s += `</div></td><td class='col_title'><div class='epg_title'>${e.title}</div></td>`;
+	s += `</div></td><td class='col_title'>` + whatson_epg_title_html(e.title) + `</td>`;
 	s += `<td class='col_desc'><div class='epg_subtitle'>${summ}</div></td>`;
       }
       else {

@@ -2,8 +2,28 @@ const COOKIE_DEFAULTS = {
   "selected_channels": [],
   "SORT": "1", "CSORT": "0", "TIMESPAN": "2", "EPGSTART": "0", "THEME": "0", "UUID": "None",
   "SUUID": "", "CLASHDET": "0", "TVH_URL": "", "REFR": "", "HOME": "now", "PREVIEW_PLAYER": "external",
-  "VLC_HELPER": "1", "VLC_HELPER_PORT": "8765"
+  "VLC_HELPER": "1", "VLC_HELPER_PORT": "8765", "VLC_STOP_ON_MENU": "0"
 };
+
+var WHATSON_TITLE_MAX_CHARS = 20;
+
+function escape_html_text(text) {
+  return String(text)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function whatson_epg_title_html(title) {
+  if (!title) return '<div class="epg_title"></div>';
+  var raw = String(title);
+  var esc = escape_html_text(raw);
+  if (raw.length <= WHATSON_TITLE_MAX_CHARS) {
+    return '<div class="epg_title">' + esc + '</div>';
+  }
+  return '<div class="epg_title" title="' + esc + '">' + esc.slice(0, WHATSON_TITLE_MAX_CHARS) + '…</div>';
+}
 
 var VLC_PLUGIN_MIME = 'application/x-vlc-plugin';
 
@@ -176,7 +196,7 @@ function show_vlc_launch_hint(absUrl, mode) {
   if (mode === 'helper') {
     body =
       '<div class="tvh-vlc-hint-title">VLC started</div>' +
-      '<div class="tvh-vlc-hint-text">The local Python helper launched VLC fullscreen.</div>';
+      '<div class="tvh-vlc-hint-text">Fullscreen VLC — press M for menu (VLC stays on). Play another channel to switch.</div>';
   } else if (mode === 'helper-missing') {
     body =
       '<div class="tvh-vlc-hint-title">VLC helper not running</div>' +
@@ -220,12 +240,10 @@ async function launch_external_vlc(streamUrl, label) {
   var helper = vlc_helper_base();
   if (helper) {
     try {
-      const playUrl = helper + '/play?url=' + encodeURIComponent(abs);
-      const response = await fetch(playUrl, { method: 'GET', mode: 'cors', cache: 'no-store' });
-      if (response.ok) {
-        show_vlc_launch_hint(abs, 'helper');
-        return;
-      }
+      var q = helper + '/play?url=' + encodeURIComponent(abs);
+      if (label) q += '&title=' + encodeURIComponent(String(label).slice(0, 200));
+      const response = await fetch(q, { method: 'GET', mode: 'cors', cache: 'no-store' });
+      if (response.ok) return;
       log_preview_issue('external-vlc', 'helper HTTP ' + response.status, playUrl);
     } catch (e) {
       log_preview_issue('external-vlc', 'helper: ' + (e.message || e), helper);
@@ -1496,6 +1514,14 @@ function exit_panel_fullscreen() {
   if (fn) fn.call(document).catch(function() {});
 }
 
+async function vlc_helper_stop() {
+  const helper = vlc_helper_base();
+  if (!helper) return;
+  try {
+    await fetch(helper + '/stop', { method: 'GET', mode: 'cors', cache: 'no-store' });
+  } catch (e) {}
+}
+
 function enter_menu_fullscreen_mode() {
   document.body.classList.add('menu-mode');
   request_panel_fullscreen(document.getElementById('container'));
@@ -1513,8 +1539,12 @@ function init_menu_fullscreen_mode() {
     if (e.target.matches('input, textarea, select')) return;
     if (e.key === 'm' || e.key === 'M') {
       e.preventDefault();
-      if (document.body.classList.contains('menu-mode')) exit_menu_fullscreen_mode();
-      else enter_menu_fullscreen_mode();
+      if (document.body.classList.contains('menu-mode')) {
+        exit_menu_fullscreen_mode();
+      } else {
+        if (cookies.VLC_STOP_ON_MENU === '1') void vlc_helper_stop();
+        enter_menu_fullscreen_mode();
+      }
       return;
     }
     if (e.key === 'Escape' && document.body.classList.contains('menu-mode')) {
@@ -1543,6 +1573,9 @@ async function play_in_external_vlc(uuid, name, type, forceProfile) {
   const url = await resolve_play_ticket_url(uuid, type, profileName, title);
   if (!url) return;
   store_preview_channel(uuid, name, url, 0, type);
+  if (document.body.classList.contains('menu-mode')) {
+    exit_menu_fullscreen_mode();
+  }
   await launch_external_vlc(url, name);
 }
 
@@ -1612,7 +1645,7 @@ function init_navigation() {
       ['→', 'Enter page'],
       ['←', 'Menu'],
       ['Enter', 'Select / play'],
-      ['M', 'Menu full screen']
+      ['M', 'Menu on/off (VLC stays)']
     ];
     const kbEl = document.createElement('div');
     kbEl.className = 'nav_keybinds';
@@ -1627,6 +1660,7 @@ function init_navigation() {
     nav.addEventListener('click', function(e) {
       const link = e.target.closest('a');
       if (link && link.getAttribute('href') && link.getAttribute('href') !== '#') {
+        if (document.body.classList.contains('menu-mode')) exit_menu_fullscreen_mode();
         save_preview_position();
       }
     });

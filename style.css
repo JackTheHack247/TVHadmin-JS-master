@@ -935,6 +935,26 @@ a:hover {
 	text-overflow: ellipsis;
 	white-space: nowrap;
 	font-size: clamp(14px, 1.05vw, 20px);
+	line-height: 1.25;
+	max-height: calc(1.25 * clamp(14px, 1.05vw, 20px));
+}
+
+#whatson tr.title-wraps .col_title .epg_title {
+	white-space: normal;
+	overflow-wrap: break-word;
+	word-break: normal;
+	display: -webkit-box;
+	-webkit-box-orient: vertical;
+	-webkit-line-clamp: 2;
+	line-clamp: 2;
+	max-height: calc(2 * 1.25 * clamp(14px, 1.05vw, 20px));
+}
+
+#whatson tr.title-wraps.channel-wraps .col_title .epg_title,
+#whatson tr.title-wraps.desc-wraps .col_title .epg_title {
+	-webkit-line-clamp: 3;
+	line-clamp: 3;
+	max-height: calc(3 * 1.25 * clamp(14px, 1.05vw, 20px));
 }
 
 #whatson .col_desc {

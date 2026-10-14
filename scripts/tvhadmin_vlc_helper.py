@@ -57,19 +57,37 @@ def url_is_allowed(url):
     return bool(STREAM_PATH.match(path))
 
 
-def launch_vlc(url):
+def launch_vlc(url, title=None):
     cmd = [
         "vlc",
         "--fullscreen",
         "--one-instance",
-        url,
+        "--one-instance-when-started",
+        "--no-playlist-enqueue",
     ]
+    if title:
+        safe = re.sub(r"[\r\n\x00]", " ", title).strip()[:200]
+        if safe:
+            cmd.append("--meta-title=" + safe)
+    cmd.append(url)
     subprocess.Popen(
         cmd,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         start_new_session=True,
     )
+
+
+def stop_vlc():
+    """Quit VLC (optional — TVHadmin keeps VLC running when opening the menu)."""
+    try:
+        subprocess.call(
+            ["pkill", "-TERM", "vlc"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception:
+        pass
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -105,7 +123,7 @@ class Handler(BaseHTTPRequestHandler):
                 pass
         return ""
 
-    def _play(self, url):
+    def _play(self, url, title=None):
         url = (url or "").strip()
         if not url:
             self.send_response(400)
@@ -122,7 +140,7 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(b'{"ok":false,"error":"url not allowed"}')
             return
         try:
-            launch_vlc(url)
+            launch_vlc(url, title=title)
         except FileNotFoundError:
             self.send_response(500)
             self._cors()
@@ -144,9 +162,29 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(b'{"ok":true}')
 
+    def _read_play_args(self):
+        parsed = urlparse(self.path)
+        qs = parse_qs(parsed.query)
+        url = ""
+        if qs.get("url"):
+            url = unquote(qs["url"][0])
+        title = unquote(qs["title"][0]) if qs.get("title") else None
+        return url, title
+
     def do_GET(self):
         if self.path.startswith("/play"):
-            self._play(self._read_url())
+            url, title = self._read_play_args()
+            if not url:
+                url = self._read_url()
+            self._play(url, title=title)
+            return
+        if self.path.startswith("/stop"):
+            stop_vlc()
+            self.send_response(200)
+            self._cors()
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b'{"ok":true}')
             return
         if self.path.startswith("/health"):
             self.send_response(200)
@@ -160,7 +198,17 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         if self.path.startswith("/play"):
-            self._play(self._read_url())
+            url = ""
+            title = None
+            length = int(self.headers.get("Content-Length") or 0)
+            if length and length < 8192:
+                try:
+                    body = json.loads(self.rfile.read(length).decode("utf-8"))
+                    url = body.get("url") or ""
+                    title = body.get("title")
+                except Exception:
+                    pass
+            self._play(url, title=title)
             return
         self.send_response(404)
         self.end_headers()
