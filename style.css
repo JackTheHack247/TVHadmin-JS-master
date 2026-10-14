@@ -1403,6 +1403,16 @@ a:hover {
 	opacity: 0.9;
 }
 
+#config .config-inline-hint {
+	display: inline-block;
+	margin-left: 0.5vw;
+	font-size: clamp(10px, 0.8vw, 13px);
+	font-weight: normal;
+	opacity: 0.9;
+	max-width: 28vw;
+	vertical-align: middle;
+}
+
 #config .config-list tr.row_alt td {
 	background: var(--wb-content);
 	border-bottom: 2px solid var(--wb-border);

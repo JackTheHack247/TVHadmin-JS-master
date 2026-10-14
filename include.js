@@ -1,7 +1,8 @@
 const COOKIE_DEFAULTS = {
   "selected_channels": [],
   "SORT": "1", "CSORT": "0", "TIMESPAN": "2", "EPGSTART": "0", "THEME": "0", "UUID": "None",
-  "SUUID": "", "CLASHDET": "0", "TVH_URL": "", "REFR": "", "HOME": "now", "PREVIEW_PLAYER": "external"
+  "SUUID": "", "CLASHDET": "0", "TVH_URL": "", "REFR": "", "HOME": "now", "PREVIEW_PLAYER": "external",
+  "VLC_HELPER": "1", "VLC_HELPER_PORT": "8765"
 };
 
 var VLC_PLUGIN_MIME = 'application/x-vlc-plugin';
@@ -150,48 +151,93 @@ function current_preview_stream_url() {
   return build_preview_url(uuid, type);
 }
 
-function vlc_protocol_href(absUrl) {
-  var u = absUrl || '';
-  if (/^https:/i.test(u)) u = u.replace(/^https:/i, 'http:');
-  return 'vlc://' + u.replace(/^vlc:\/\//i, '');
-}
-
 function dismiss_vlc_launch_hint() {
   const el = document.getElementById('tvh-vlc-hint');
   if (el) el.remove();
 }
 
-function show_vlc_launch_hint(absUrl) {
+function vlc_helper_enabled() {
+  return cookies.VLC_HELPER !== '0' && cookies.VLC_HELPER !== '';
+}
+
+function vlc_helper_base() {
+  if (!vlc_helper_enabled()) return null;
+  var port = parseInt(cookies.VLC_HELPER_PORT || '8765', 10);
+  if (!port || port < 1 || port > 65535) port = 8765;
+  return 'http://127.0.0.1:' + port;
+}
+
+function show_vlc_launch_hint(absUrl, mode) {
   dismiss_vlc_launch_hint();
   const safe = String(absUrl).replace(/&/g, '&amp;').replace(/</g, '&lt;');
   const hint = document.createElement('div');
   hint.id = 'tvh-vlc-hint';
-  hint.innerHTML =
-    '<div class="tvh-vlc-hint-title">Opening in VLC…</div>' +
-    '<div class="tvh-vlc-hint-text">Network URL (Media → Open Network Stream):</div>' +
+  var body = '';
+  if (mode === 'helper') {
+    body =
+      '<div class="tvh-vlc-hint-title">VLC started</div>' +
+      '<div class="tvh-vlc-hint-text">The local Python helper launched VLC fullscreen.</div>';
+  } else if (mode === 'helper-missing') {
+    body =
+      '<div class="tvh-vlc-hint-title">VLC helper not running</div>' +
+      '<div class="tvh-vlc-hint-text">On the Pi, start: <code>sh scripts/start-vlc-helper.sh</code> then press Play again.</div>' +
+      '<div class="tvh-vlc-hint-text">Downloaded <b>tvhadmin-play.m3u</b> as fallback — open in VLC.</div>';
+  } else {
+    body =
+      '<div class="tvh-vlc-hint-title">Play in VLC</div>' +
+      '<div class="tvh-vlc-hint-text">Open <b>tvhadmin-play.m3u</b> with VLC, or Media → Open Network Stream:</div>';
+  }
+  hint.innerHTML = body +
     '<code class="tvh-vlc-hint-cmd">' + safe + '</code>' +
     '<div class="tvh-vlc-hint-text">Terminal: vlc --fullscreen --one-instance \'' + String(absUrl).replace(/'/g, "'\\''") + '\'</div>' +
     '<button type="button" class="tvh-vlc-hint-close">Dismiss</button>';
   document.body.appendChild(hint);
   hint.querySelector('.tvh-vlc-hint-close').addEventListener('click', dismiss_vlc_launch_hint);
-  setTimeout(dismiss_vlc_launch_hint, 12000);
+  setTimeout(dismiss_vlc_launch_hint, mode === 'helper' ? 5000 : 14000);
 }
 
-function launch_external_vlc(streamUrl, label) {
+function download_vlc_m3u_playlist(absUrl, label) {
+  var title = String(label || 'TVHadmin').replace(/[\r\n#]/g, ' ').trim();
+  var m3u = '#EXTM3U\n#EXTINF:-1,' + title + '\n' + absUrl + '\n';
+  var blob = new Blob([m3u], { type: 'audio/x-mpegurl' });
+  var blobUrl = URL.createObjectURL(blob);
+  var a = document.createElement('a');
+  a.href = blobUrl;
+  a.download = 'tvhadmin-play.m3u';
+  a.style.display = 'none';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(function() { URL.revokeObjectURL(blobUrl); }, 2000);
+}
+
+async function launch_external_vlc(streamUrl, label) {
   if (!streamUrl) return;
-  const abs = absolute_stream_url(streamUrl);
+  var abs = absolute_stream_url(streamUrl);
+  if (/^https:/i.test(abs)) abs = abs.replace(/^https:/i, 'http:');
   log_preview_issue('external-vlc', label || 'Play in VLC', abs);
-  try {
-    const a = document.createElement('a');
-    a.href = vlc_protocol_href(abs);
-    a.style.display = 'none';
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-  } catch (e) {
-    log_preview_issue('external-vlc', 'vlc:// failed: ' + (e.message || e), abs);
+
+  var helper = vlc_helper_base();
+  if (helper) {
+    try {
+      const playUrl = helper + '/play?url=' + encodeURIComponent(abs);
+      const response = await fetch(playUrl, { method: 'GET', mode: 'cors', cache: 'no-store' });
+      if (response.ok) {
+        show_vlc_launch_hint(abs, 'helper');
+        return;
+      }
+      log_preview_issue('external-vlc', 'helper HTTP ' + response.status, playUrl);
+    } catch (e) {
+      log_preview_issue('external-vlc', 'helper: ' + (e.message || e), helper);
+    }
   }
-  show_vlc_launch_hint(abs);
+
+  try {
+    download_vlc_m3u_playlist(abs, label);
+  } catch (e) {
+    log_preview_issue('external-vlc', 'm3u download: ' + (e.message || e), abs);
+  }
+  show_vlc_launch_hint(abs, helper ? 'helper-missing' : 'm3u');
 }
 
 function open_external_player() {
@@ -520,10 +566,13 @@ function pick_vlc_stream_profile(name, uuid) {
   function has(p) {
     return p && available.indexOf(p) !== -1;
   }
-  if (cookies.SUUID && has(cookies.SUUID)) return cookies.SUUID;
   if (is_radio_channel(name, uuid) && has('audio')) return 'audio';
   if (has('pass')) return 'pass';
   if (has('matroska')) return 'matroska';
+  if (cookies.SUUID && has(cookies.SUUID)) {
+    var s = cookies.SUUID;
+    if (s === 'audio' || s === 'pass' || s === 'matroska') return s;
+  }
   if (has('webtv-h264-aac-matroska')) return 'webtv-h264-aac-matroska';
   if (has('webtv-h264-vorbis-matroska')) return 'webtv-h264-vorbis-matroska';
   for (let j = 0; j < available.length; j++) {
@@ -869,7 +918,7 @@ function preview_retry_with_profile(profile) {
   cookies.SUUID = profile;
   save_settings({ SUUID: profile });
   if (preview_player_mode() === 'external') {
-    play_in_external_vlc(uuid, name, type, profile);
+    void play_in_external_vlc(uuid, name, type, profile);
     return;
   }
   const video = document.getElementById('live-preview');
@@ -1494,7 +1543,7 @@ async function play_in_external_vlc(uuid, name, type, forceProfile) {
   const url = await resolve_play_ticket_url(uuid, type, profileName, title);
   if (!url) return;
   store_preview_channel(uuid, name, url, 0, type);
-  launch_external_vlc(url, name);
+  await launch_external_vlc(url, name);
 }
 
 async function preview_channel(uuid, name) {
@@ -1516,7 +1565,7 @@ async function preview_channel(uuid, name) {
 
 function play_recording(uuid, title) {
   if (preview_player_mode() === 'external') {
-    play_in_external_vlc(uuid, title, 'recording');
+    void play_in_external_vlc(uuid, title, 'recording');
     return;
   }
   const video = document.getElementById('live-preview');

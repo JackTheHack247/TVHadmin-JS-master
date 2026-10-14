@@ -85,6 +85,17 @@
                 </select>
               </td>
             </tr>
+            <tr class="row_alt">
+              <td class="col_label">VLC Python helper</td>
+              <td class="col_value">
+                <input type="checkbox" name="VLC_HELPER" value="1" checked>
+                <span class="config-inline-hint">Run <code>scripts/start-vlc-helper.sh</code> on the Pi — Play launches VLC automatically.</span>
+              </td>
+            </tr>
+            <tr class="row_alt">
+              <td class="col_label">Helper port</td>
+              <td class="col_value"><input type="text" name="VLC_HELPER_PORT" size="6" placeholder="8765"></td>
+            </tr>
             <tr class="row_alt" id="prof-row" style="display:none">
               <td class="col_label">Recording Profile</td>
               <td class="col_value" id="prof"></td>
@@ -179,7 +190,7 @@ async function main() {
 
   const previewHint = document.createElement('div');
   previewHint.className = 'stream-prof-hint';
-  previewHint.textContent = 'External VLC: Play opens vlc:// in VLC (use pass profile). For fullscreen on Pi, run once: sh scripts/install-vlc-fullscreen-handler.sh from the TVHadmin folder.';
+  previewHint.textContent = 'External VLC: start scripts/start-vlc-helper.sh on the Pi, enable VLC Python helper below, Save. Play runs VLC fullscreen via Python (fallback: .m3u download). Use stream profile pass.';
   const previewRow = document.querySelector('select[name="PREVIEW_PLAYER"]');
   if (previewRow && previewRow.parentNode) previewRow.parentNode.appendChild(previewHint);
 
