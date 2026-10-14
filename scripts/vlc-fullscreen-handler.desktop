@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=TVHadmin VLC fullscreen
+Comment=Open TVHeadend streams in VLC fullscreen (for vlc:// links from TVHadmin)
+Exec=/usr/bin/vlc --fullscreen --one-instance %u
+NoDisplay=true
+Terminal=false
+MimeType=x-scheme-handler/vlc;

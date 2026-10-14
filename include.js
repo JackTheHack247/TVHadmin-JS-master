@@ -1,8 +1,10 @@
 const COOKIE_DEFAULTS = {
   "selected_channels": [],
   "SORT": "1", "CSORT": "0", "TIMESPAN": "2", "EPGSTART": "0", "THEME": "0", "UUID": "None",
-  "SUUID": "", "CLASHDET": "0", "TVH_URL": "", "REFR": "", "HOME": "now"
+  "SUUID": "", "CLASHDET": "0", "TVH_URL": "", "REFR": "", "HOME": "now", "PREVIEW_PLAYER": "external"
 };
+
+var VLC_PLUGIN_MIME = 'application/x-vlc-plugin';
 
 function get_cookies() {
   const n = "TVHadmin";
@@ -71,9 +73,8 @@ function is_cross_origin_url(url) {
 
 function set_video_stream_attrs(video, url) {
   if (!video) return;
-  if (is_tvh_stream_url(url) && tvh_configured()) {
-    video.crossOrigin = 'use-credentials';
-  } else if (is_cross_origin_url(url)) {
+  /* Same-origin /static/ + /stream/ must not use crossOrigin or Pale Moon/Firefox treat it as CORS and fail. */
+  if (is_cross_origin_url(url)) {
     video.crossOrigin = 'use-credentials';
   } else {
     video.removeAttribute('crossorigin');
@@ -121,7 +122,15 @@ function browser_supports_h264_mp4() {
   return mp4 === 'probably' || mp4 === 'maybe';
 }
 
+function browser_supports_h264_matroska() {
+  var v = document.createElement('video');
+  if (!v.canPlayType) return false;
+  var mkv = v.canPlayType('video/x-matroska; codecs="avc1.42E01E, mp4a.40.2"');
+  return mkv === 'probably' || mkv === 'maybe';
+}
+
 function show_codec_hint() {
+  if (preview_player_mode() === 'external' || preview_player_mode() === 'vlc') return;
   if (browser_supports_h264_mp4()) return;
   if (document.getElementById('tvh-codec-banner')) return;
   const banner = document.createElement('div');
@@ -139,10 +148,57 @@ function current_preview_stream_url() {
   return build_preview_url(uuid, type);
 }
 
+function vlc_protocol_href(absUrl) {
+  var u = absUrl || '';
+  if (/^https:/i.test(u)) u = u.replace(/^https:/i, 'http:');
+  return 'vlc://' + u.replace(/^vlc:\/\//i, '');
+}
+
+function dismiss_vlc_launch_hint() {
+  const el = document.getElementById('tvh-vlc-hint');
+  if (el) el.remove();
+}
+
+function show_vlc_launch_hint(absUrl) {
+  dismiss_vlc_launch_hint();
+  const hint = document.createElement('div');
+  hint.id = 'tvh-vlc-hint';
+  hint.innerHTML =
+    '<div class="tvh-vlc-hint-title">Opening in VLC…</div>' +
+    '<div class="tvh-vlc-hint-text">If nothing opens, run in a terminal:</div>' +
+    '<code class="tvh-vlc-hint-cmd">vlc --fullscreen --one-instance \'' + String(absUrl).replace(/'/g, "'\\''") + '\'</code>' +
+    '<button type="button" class="tvh-vlc-hint-close">Dismiss</button>';
+  document.body.appendChild(hint);
+  hint.querySelector('.tvh-vlc-hint-close').addEventListener('click', dismiss_vlc_launch_hint);
+  setTimeout(dismiss_vlc_launch_hint, 12000);
+}
+
+function launch_external_vlc(streamUrl, label) {
+  if (!streamUrl) return;
+  const abs = absolute_stream_url(streamUrl);
+  log_preview_issue('external-vlc', label || 'Play in VLC', abs);
+  try {
+    const a = document.createElement('a');
+    a.href = vlc_protocol_href(abs);
+    a.style.display = 'none';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  } catch (e) {
+    log_preview_issue('external-vlc', 'vlc:// failed: ' + (e.message || e), abs);
+  }
+  show_vlc_launch_hint(abs);
+}
+
 function open_external_player() {
   const url = current_preview_stream_url();
   if (!url) return;
-  window.open(url, '_blank');
+  launch_external_vlc(url, 'Open stream');
+}
+
+function sync_layout_for_preview_player() {
+  if (preview_player_mode() === 'external') document.body.classList.add('layout-no-preview');
+  else document.body.classList.remove('layout-no-preview');
 }
 
 function show_tvh_error(message) {
@@ -200,7 +256,7 @@ function init_layout() {
   if (!layout.querySelector('#video-panel')) {
     const panel = document.createElement('div');
     panel.id = 'video-panel';
-    panel.innerHTML = '<div class="video-placeholder">Select a channel to preview</div><video id="live-preview" controls playsinline></video><div id="spectrum-analyzer"></div><div id="radio-now-playing"><div class="radio-info"><div class="radio-channel"></div><div class="radio-title"></div><div class="radio-subtitle"></div></div><div class="radio-time"></div></div><a href="#" id="open-external-player" class="open-external-player">Open stream in VLC / player</a>';
+    panel.innerHTML = '<div class="video-placeholder">Select a channel to preview</div><div id="vlc-preview-host"></div><video id="live-preview" controls playsinline></video><div id="spectrum-analyzer"></div><div id="radio-now-playing"><div class="radio-info"><div class="radio-channel"></div><div class="radio-title"></div><div class="radio-subtitle"></div></div><div class="radio-time"></div></div><a href="#" id="open-external-player" class="open-external-player">Open stream in VLC / player</a>';
     layout.appendChild(panel);
     const video = document.getElementById('live-preview');
     if (video) video.style.display = 'none';
@@ -209,7 +265,8 @@ function init_layout() {
   layout.dataset.layoutReady = '1';
   init_preview_persist();
   init_spectrum();
-  init_tv_mode();
+  init_menu_fullscreen_mode();
+  sync_layout_for_preview_player();
   show_codec_hint();
   const ext = document.getElementById('open-external-player');
   if (ext) {
@@ -222,6 +279,7 @@ function init_layout() {
 }
 
 async function restore_stored_preview() {
+  if (preview_player_mode() === 'external') return;
   if (sessionStorage.getItem('preview_active') !== '1') return;
   const uuid = sessionStorage.getItem('preview_uuid');
   const name = sessionStorage.getItem('preview_name') || '';
@@ -396,6 +454,9 @@ var DEFAULT_STREAM_PROFILES = [
 var cached_stream_profile_vals = null;
 
 var BROWSER_STREAM_PROFILES = [
+  'webtv-h264-aac-matroska',
+  'webtv-h264-vorbis-matroska',
+  'matroska',
   'webtv-h264-aac-mp4',
   'webtv-h264-vorbis-mp4',
   'audio'
@@ -404,17 +465,28 @@ var BROWSER_STREAM_PROFILES = [
 var preview_generation = 0;
 
 function is_heavy_or_unsafe_browser_profile(p) {
-  if (!p) return true;
+  if (!p) return false;
   var lower = String(p).toLowerCase();
-  if (/vp8|webm|mpegts|matroska/.test(lower)) return true;
-  if (lower === 'pass') return true;
+  if (/vp8|webm/.test(lower)) return true;
+  if (lower === 'pass' || /mpegts|^ts$/.test(lower)) return true;
   return false;
+}
+
+function browser_can_use_stream_profile(p) {
+  if (!p || p === 'audio') return true;
+  var lower = String(p).toLowerCase();
+  if (lower.indexOf('matroska') !== -1 || lower === 'matroska') {
+    return browser_supports_h264_matroska() || browser_supports_h264_mp4();
+  }
+  if (lower.indexOf('mp4') !== -1) return browser_supports_h264_mp4();
+  return !is_heavy_or_unsafe_browser_profile(p);
 }
 
 function best_browser_stream_profile_hint() {
   const available = cached_stream_profile_vals || [];
   for (let i = 0; i < BROWSER_STREAM_PROFILES.length; i++) {
-    if (available.indexOf(BROWSER_STREAM_PROFILES[i]) !== -1) return BROWSER_STREAM_PROFILES[i];
+    var hint = BROWSER_STREAM_PROFILES[i];
+    if (available.indexOf(hint) !== -1 && browser_can_use_stream_profile(hint)) return hint;
   }
   for (let j = 0; j < available.length; j++) {
     if (!is_heavy_or_unsafe_browser_profile(available[j])) return available[j];
@@ -430,7 +502,8 @@ function pick_stream_profile(name, uuid) {
   if (cookies.SUUID && has(cookies.SUUID)) return cookies.SUUID;
   if (is_radio_channel(name, uuid) && has('audio')) return 'audio';
   for (let i = 0; i < BROWSER_STREAM_PROFILES.length; i++) {
-    if (has(BROWSER_STREAM_PROFILES[i])) return BROWSER_STREAM_PROFILES[i];
+    var cand = BROWSER_STREAM_PROFILES[i];
+    if (has(cand) && browser_can_use_stream_profile(cand)) return cand;
   }
   for (let j = 0; j < available.length; j++) {
     if (!is_heavy_or_unsafe_browser_profile(available[j])) return available[j];
@@ -438,7 +511,201 @@ function pick_stream_profile(name, uuid) {
   return '';
 }
 
+function pick_vlc_stream_profile(name, uuid) {
+  const available = cached_stream_profile_vals || [];
+  function has(p) {
+    return p && available.indexOf(p) !== -1;
+  }
+  if (cookies.SUUID && has(cookies.SUUID)) return cookies.SUUID;
+  if (is_radio_channel(name, uuid) && has('audio')) return 'audio';
+  if (has('pass')) return 'pass';
+  if (has('matroska')) return 'matroska';
+  if (has('webtv-h264-aac-matroska')) return 'webtv-h264-aac-matroska';
+  if (has('webtv-h264-vorbis-matroska')) return 'webtv-h264-vorbis-matroska';
+  for (let j = 0; j < available.length; j++) {
+    if (!/^webtv-vp8|vp8|webm/i.test(available[j])) return available[j];
+  }
+  return '';
+}
+
+function vlc_plugin_detected() {
+  try {
+    if (navigator.mimeTypes && navigator.mimeTypes[VLC_PLUGIN_MIME] && navigator.mimeTypes[VLC_PLUGIN_MIME].enabledPlugin) {
+      return true;
+    }
+    if (navigator.plugins) {
+      for (let i = 0; i < navigator.plugins.length; i++) {
+        const plug = navigator.plugins[i];
+        if (!plug) continue;
+        for (let j = 0; j < plug.length; j++) {
+          if (plug[j].type === VLC_PLUGIN_MIME) return true;
+        }
+      }
+    }
+  } catch (e) {}
+  return false;
+}
+
+function preview_player_mode() {
+  const pref = cookies.PREVIEW_PLAYER || 'external';
+  if (pref === 'html5') return 'html5';
+  if (pref === 'vlc') return 'vlc';
+  if (pref === 'auto') return vlc_plugin_detected() ? 'vlc' : 'html5';
+  return 'external';
+}
+
+function escape_html_attr(value) {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;');
+}
+
+function absolute_stream_url(streamUrl) {
+  if (!streamUrl) return streamUrl;
+  if (/^https?:\/\//i.test(streamUrl)) return streamUrl;
+  try {
+    return new URL(streamUrl, location.href).href;
+  } catch (e) {
+    return streamUrl;
+  }
+}
+
+function ensure_vlc_preview_host() {
+  let host = document.getElementById('vlc-preview-host');
+  if (host) return host;
+  const panel = document.getElementById('video-panel');
+  if (!panel) return null;
+  host = document.createElement('div');
+  host.id = 'vlc-preview-host';
+  const video = document.getElementById('live-preview');
+  if (video && video.parentNode === panel) panel.insertBefore(host, video);
+  else panel.appendChild(host);
+  return host;
+}
+
+function vlc_get_embed() {
+  return document.getElementById('vlc-preview-embed') || document.getElementById('vlc-preview-obj');
+}
+
+function stop_vlc_preview() {
+  const host = document.getElementById('vlc-preview-host');
+  if (!host) return;
+  const vlc = vlc_get_embed();
+  if (vlc) {
+    try {
+      if (vlc.playlist) {
+        vlc.playlist.stop();
+        vlc.playlist.clear();
+      }
+    } catch (e) {}
+  }
+  host.innerHTML = '';
+  host.style.display = 'none';
+}
+
+function vlc_play_stream(vlc, streamUrl) {
+  if (!vlc || !streamUrl) return false;
+  const url = absolute_stream_url(streamUrl);
+  try {
+    if (vlc.playlist && vlc.playlist.add) {
+      vlc.playlist.stop();
+      if (vlc.playlist.clear) vlc.playlist.clear();
+      vlc.playlist.add(url);
+      vlc.playlist.play();
+      return true;
+    }
+  } catch (e) {
+    log_preview_issue('vlc', 'playlist API: ' + (e.message || e), url);
+  }
+  return false;
+}
+
+function vlc_input_state(vlc) {
+  try {
+    if (vlc && vlc.input && typeof vlc.input.state !== 'undefined') return vlc.input.state;
+  } catch (e) {}
+  return -1;
+}
+
+function play_preview_with_vlc(streamUrl, playId, placeholder, profileName, name, channelUuid, type) {
+  const host = ensure_vlc_preview_host();
+  const video = document.getElementById('live-preview');
+  if (!host || !streamUrl) {
+    show_preview_error_message('VLC preview container missing.', 'config');
+    return;
+  }
+  if (video) {
+    video.pause();
+    video.removeAttribute('src');
+    video.style.display = 'none';
+  }
+  stop_vlc_preview();
+  host.style.display = 'block';
+  if (placeholder) {
+    placeholder.style.display = 'block';
+    placeholder.textContent = 'Loading in VLC plugin… (' + (profileName || 'stream') + ')';
+  }
+
+  const fullUrl = absolute_stream_url(streamUrl);
+  host.innerHTML =
+    '<object type="' + VLC_PLUGIN_MIME + '" id="vlc-preview-obj" width="100%" height="100%">' +
+    '<embed type="' + VLC_PLUGIN_MIME + '" id="vlc-preview-embed" name="vlc" width="100%" height="100%" ' +
+    'pluginspage="https://www.videolan.org/" version="VideoLAN.VLCPlugin.2" ' +
+    'target="' + escape_html_attr(fullUrl) + '" autoplay="yes" controls="yes" toolbar="yes" loop="no" /></object>';
+
+  var loggedError = false;
+  var stallTimer = setTimeout(function() {
+    if (playId !== preview_generation) return;
+    const vlc = vlc_get_embed();
+    const st = vlc_input_state(vlc);
+    if (st === 3 || st === 2) {
+      if (placeholder) placeholder.style.display = 'none';
+      return;
+    }
+    if (!loggedError) {
+      loggedError = true;
+      var msg = 'VLC plugin did not start playback.';
+      if (!vlc_plugin_detected()) {
+        msg += ' Pale Moon needs the old VLC NPAPI plugin (VLC 3.x — removed in VLC 4). Install vlc-plugin-base or use Preview player → HTML5 / Open stream in VLC.';
+      } else {
+        msg += ' Check stream profile (pass or matroska often work). Try buttons below or open in standalone VLC.';
+      }
+      log_preview_issue('vlc', msg, fullUrl);
+      show_preview_error_message(msg, 'vlc', preview_alternate_stream_profiles(profileName));
+      host.style.display = 'none';
+    }
+  }, 20000);
+
+  function finishIfPlaying() {
+    if (playId !== preview_generation) return;
+    const vlc = vlc_get_embed();
+    const st = vlc_input_state(vlc);
+    if (st === 3) {
+      clearTimeout(stallTimer);
+      if (placeholder) placeholder.style.display = 'none';
+    }
+  }
+
+  setTimeout(function() {
+    if (playId !== preview_generation) return;
+    const vlc = vlc_get_embed();
+    if (!vlc_play_stream(vlc, streamUrl)) finishIfPlaying();
+    else {
+      setTimeout(finishIfPlaying, 1500);
+      setTimeout(finishIfPlaying, 5000);
+    }
+  }, 300);
+
+  if (is_radio_channel(name, channelUuid)) {
+    show_radio_now_playing(name, null);
+  } else {
+    hide_radio_now_playing();
+  }
+}
+
 function stop_preview_stream(video) {
+  stop_vlc_preview();
   if (!video) return;
   video.pause();
   try {
@@ -534,15 +801,70 @@ function describe_video_element_error(video, profileName) {
   }
 }
 
-function show_preview_error_message(message, kind) {
+function show_preview_error_message(message, kind, retryProfiles) {
   const placeholder = document.querySelector('#video-panel .video-placeholder');
   const video = document.getElementById('live-preview');
   if (placeholder) {
     placeholder.style.display = 'block';
     const label = kind ? String(kind).toUpperCase() : 'PLAYBACK';
-    placeholder.innerHTML = '<div class="preview-error-kind">' + label + '</div><div class="preview-error-text">' + (message || '') + '</div>';
+    var html = '<div class="preview-error-kind">' + label + '</div><div class="preview-error-text">' + (message || '') + '</div>';
+    if (kind === 'vlc' || preview_player_mode() === 'vlc') {
+      html += '<div class="preview-error-actions"><button type="button" class="preview-retry-btn" id="preview-use-html5-btn">Try HTML5 player</button></div>';
+    }
+    if (retryProfiles && retryProfiles.length) {
+      html += '<div class="preview-error-actions">';
+      for (var ri = 0; ri < retryProfiles.length; ri++) {
+        var rp = retryProfiles[ri];
+        html += '<button type="button" class="preview-retry-btn" data-profile="' + String(rp).replace(/"/g, '&quot;') + '">Try ' + rp + '</button>';
+      }
+      html += '</div>';
+    }
+    placeholder.innerHTML = html;
+    const html5Btn = placeholder.querySelector('#preview-use-html5-btn');
+    if (html5Btn) html5Btn.addEventListener('click', preview_switch_to_html5);
+    placeholder.querySelectorAll('.preview-retry-btn[data-profile]').forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        preview_retry_with_profile(btn.getAttribute('data-profile'));
+      });
+    });
   }
   if (video) video.style.display = 'none';
+  const vlcHost = document.getElementById('vlc-preview-host');
+  if (vlcHost) vlcHost.style.display = 'none';
+}
+
+function preview_switch_to_html5() {
+  save_settings({ PREVIEW_PLAYER: 'html5' });
+  cookies.PREVIEW_PLAYER = 'html5';
+  const video = document.getElementById('live-preview');
+  const uuid = sessionStorage.getItem('preview_uuid');
+  const name = sessionStorage.getItem('preview_name') || '';
+  if (video && uuid) play_preview(video, name, null, 0, uuid);
+}
+
+function preview_alternate_stream_profiles(currentProfile) {
+  const available = cached_stream_profile_vals || [];
+  const out = [];
+  function add(p) {
+    if (!p || p === currentProfile || out.indexOf(p) !== -1) return;
+    if (available.length && available.indexOf(p) === -1) return;
+    if (is_heavy_or_unsafe_browser_profile(p)) return;
+    if (!browser_can_use_stream_profile(p)) return;
+    out.push(p);
+  }
+  if (is_radio_channel(sessionStorage.getItem('preview_name') || '', sessionStorage.getItem('preview_uuid'))) add('audio');
+  for (let i = 0; i < BROWSER_STREAM_PROFILES.length; i++) add(BROWSER_STREAM_PROFILES[i]);
+  return out.slice(0, 3);
+}
+
+function preview_retry_with_profile(profile) {
+  const video = document.getElementById('live-preview');
+  const uuid = sessionStorage.getItem('preview_uuid');
+  const name = sessionStorage.getItem('preview_name') || '';
+  if (!video || !uuid || !profile) return;
+  cookies.SUUID = profile;
+  save_settings({ SUUID: profile });
+  play_preview(video, name, null, 0, uuid, profile);
 }
 
 function build_preview_url(uuid, type, profile) {
@@ -556,7 +878,7 @@ function build_preview_url(uuid, type, profile) {
   return streamUrl;
 }
 
-function play_preview(video, name, url, seekTime, uuid) {
+function play_preview(video, name, url, seekTime, uuid, forceProfile) {
   const placeholder = document.querySelector('#video-panel .video-placeholder');
   stop_spectrum();
   if (!video) return;
@@ -571,15 +893,29 @@ function play_preview(video, name, url, seekTime, uuid) {
   const live = sessionStorage.getItem('preview_live') === '1' || is_live_preview(url, type);
   const time = live ? 0 : (Number(seekTime) || 0);
   const seekable = !live && url && is_seekable_preview(url);
-  const profileName = (type !== 'recording' && channelUuid) ? pick_stream_profile(name, channelUuid) : (cookies.SUUID || '');
-  let streamUrl = url;
-  if (!streamUrl && channelUuid) {
+  const playerMode = preview_player_mode();
+  var profileName = (type !== 'recording' && channelUuid)
+    ? (playerMode === 'vlc' ? pick_vlc_stream_profile(name, channelUuid) : pick_stream_profile(name, channelUuid))
+    : (cookies.SUUID || '');
+  if (forceProfile) profileName = forceProfile;
+  let streamUrl = null;
+  if (type !== 'recording' && channelUuid) {
+    streamUrl = build_preview_url(channelUuid, type, profileName);
+  } else if (url) {
+    streamUrl = url;
+  } else if (channelUuid) {
     streamUrl = build_preview_url(channelUuid, type, profileName);
   }
   if (!streamUrl) {
     show_preview_error_message('No stream URL or profile.', 'config');
     return;
   }
+
+  if (playerMode === 'vlc') {
+    play_preview_with_vlc(streamUrl, playId, placeholder, profileName, name, channelUuid, type);
+    return;
+  }
+
   if (is_heavy_or_unsafe_browser_profile(profileName) && type !== 'recording') {
     show_preview_error_message('Stream profile "' + profileName + '" often breaks the Pi transcoder. In Config choose webtv-h264-vorbis-mp4 or audio (radio).', 'transcode');
     return;
@@ -603,7 +939,8 @@ function play_preview(video, name, url, seekTime, uuid) {
       loggedError = true;
       log_preview_issue(kind || 'playback', message, streamUrl);
     }
-    show_preview_error_message(message, kind);
+    var retries = (type !== 'recording' && channelUuid) ? preview_alternate_stream_profiles(profileName) : [];
+    show_preview_error_message(message, kind, retries);
   }
 
   function playNow() {
@@ -659,7 +996,7 @@ function play_preview(video, name, url, seekTime, uuid) {
   stallTimer = setTimeout(function() {
     if (playId !== preview_generation || (started && video.readyState >= 2)) return;
     show_error(
-      'No video/audio after 20s. One stream only (no profile retries). libav/AVCodec spam in the log = TVHeadend transcoder failing on the Pi — fix ffmpeg/H.264 or use VLC via Open stream below.',
+      'No video/audio after 20s. If TVHeadend shows libav errors, the Pi transcoder failed — try a Matroska profile below (often remux only), or Open stream in VLC.',
       'transcode'
     );
   }, 20000);
@@ -669,7 +1006,6 @@ function play_preview(video, name, url, seekTime, uuid) {
     video.removeEventListener('error', onError);
     clear_stall_timer();
     var msg = describe_video_element_error(video, profileName);
-    msg += ' Only one profile is tried per click (to avoid flooding TVHeadend with transcode errors).';
     show_error(msg, video.error && video.error.code === 4 ? 'codec' : 'transcode');
   }
 
@@ -796,9 +1132,7 @@ function apply_spectrum_layout(radio) {
 function attach_spectrum_audio(video) {
   if (!audio_motion || !video || !video.src) return false;
   const url = preview_base_url(video.src);
-  if (is_tvh_stream_url(url) && tvh_configured()) {
-    video.crossOrigin = 'use-credentials';
-  } else if (is_cross_origin_url(url)) {
+  if (is_cross_origin_url(url)) {
     video.crossOrigin = 'use-credentials';
   } else {
     video.removeAttribute('crossorigin');
@@ -1043,45 +1377,60 @@ function exit_panel_fullscreen() {
   if (fn) fn.call(document).catch(function() {});
 }
 
-function enter_tv_mode() {
-  document.body.classList.add('tv-mode');
-  request_panel_fullscreen(document.getElementById('video-panel'));
+function enter_menu_fullscreen_mode() {
+  document.body.classList.add('menu-mode');
+  request_panel_fullscreen(document.getElementById('container'));
 }
 
-function exit_tv_mode() {
-  document.body.classList.remove('tv-mode');
+function exit_menu_fullscreen_mode() {
+  document.body.classList.remove('menu-mode');
   exit_panel_fullscreen();
 }
 
-function init_tv_mode() {
-  document.body.classList.remove('tv-mode');
+function init_menu_fullscreen_mode() {
+  document.body.classList.remove('menu-mode');
   exit_panel_fullscreen();
   document.addEventListener('keydown', function(e) {
     if (e.target.matches('input, textarea, select')) return;
     if (e.key === 'm' || e.key === 'M') {
       e.preventDefault();
-      if (document.body.classList.contains('tv-mode')) exit_tv_mode();
-      else enter_tv_mode();
+      if (document.body.classList.contains('menu-mode')) exit_menu_fullscreen_mode();
+      else enter_menu_fullscreen_mode();
       return;
     }
-    if (e.key === 'Escape' && document.body.classList.contains('tv-mode')) {
+    if (e.key === 'Escape' && document.body.classList.contains('menu-mode')) {
       e.preventDefault();
-      exit_tv_mode();
+      exit_menu_fullscreen_mode();
     }
   });
-  document.addEventListener('fullscreenchange', sync_tv_mode);
-  document.addEventListener('mozfullscreenchange', sync_tv_mode);
-  document.addEventListener('webkitfullscreenchange', sync_tv_mode);
+  document.addEventListener('fullscreenchange', sync_menu_fullscreen_mode);
+  document.addEventListener('mozfullscreenchange', sync_menu_fullscreen_mode);
+  document.addEventListener('webkitfullscreenchange', sync_menu_fullscreen_mode);
 }
 
-function sync_tv_mode() {
-  if (!document.body.classList.contains('tv-mode')) return;
+function sync_menu_fullscreen_mode() {
+  if (!document.body.classList.contains('menu-mode')) return;
   if (!is_fullscreen()) {
-    request_panel_fullscreen(document.getElementById('video-panel'));
+    request_panel_fullscreen(document.getElementById('container'));
   }
 }
 
+async function play_in_external_vlc(uuid, name, type, forceProfile) {
+  await ensure_stream_profile();
+  type = type || 'channel';
+  var profileName = type !== 'recording' ? pick_vlc_stream_profile(name, uuid) : '';
+  if (forceProfile) profileName = forceProfile;
+  const url = build_preview_url(uuid, type, profileName);
+  if (!url) return;
+  store_preview_channel(uuid, name, url, 0, type);
+  launch_external_vlc(url, name);
+}
+
 async function preview_channel(uuid, name) {
+  if (preview_player_mode() === 'external') {
+    await play_in_external_vlc(uuid, name, 'channel');
+    return;
+  }
   const video = document.getElementById('live-preview');
   if (!video) return;
   await ensure_stream_profile();
@@ -1095,6 +1444,10 @@ async function preview_channel(uuid, name) {
 }
 
 function play_recording(uuid, title) {
+  if (preview_player_mode() === 'external') {
+    play_in_external_vlc(uuid, title, 'recording');
+    return;
+  }
   const video = document.getElementById('live-preview');
   if (!video) return;
   const url = build_preview_url(uuid, 'recording');
@@ -1139,7 +1492,7 @@ function init_navigation() {
       ['→', 'Enter page'],
       ['←', 'Menu'],
       ['Enter', 'Select / play'],
-      ['M', 'Full screen']
+      ['M', 'Menu full screen']
     ];
     const kbEl = document.createElement('div');
     kbEl.className = 'nav_keybinds';
@@ -1350,7 +1703,7 @@ function handle_content_keydown(e) {
   if (!content_nav || menu_focus) return;
   if (content_nav.fieldEdit) return;
   if (field_blocks_navigation(e.target)) return;
-  if (document.body.classList.contains('tv-mode')) return;
+  if (document.body.classList.contains('menu-mode')) return;
 
   if (e.key === 'Escape') {
     return;
@@ -1488,7 +1841,7 @@ function init_menu_keyboard() {
   }
 
   document.addEventListener('keydown', function(e) {
-    if (document.body.classList.contains('tv-mode')) return;
+    if (document.body.classList.contains('menu-mode')) return;
 
     const editing = content_nav && content_nav.fieldEdit;
 

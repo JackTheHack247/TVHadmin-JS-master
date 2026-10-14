@@ -74,6 +74,17 @@
               <td class="col_label">Stream Profile</td>
               <td class="col_value" id="stream-prof"></td>
             </tr>
+            <tr class="row_alt">
+              <td class="col_label">Preview player</td>
+              <td class="col_value">
+                <select name="PREVIEW_PLAYER">
+                  <option value="external">External VLC app (recommended on Pi)</option>
+                  <option value="html5">HTML5 video in browser</option>
+                  <option value="vlc">VLC browser plugin (legacy NPAPI)</option>
+                  <option value="auto">Auto (plugin if detected, else HTML5)</option>
+                </select>
+              </td>
+            </tr>
             <tr class="row_alt" id="prof-row" style="display:none">
               <td class="col_label">Recording Profile</td>
               <td class="col_value" id="prof"></td>
@@ -165,6 +176,12 @@ async function main() {
   }
   document.getElementById("stream-prof").appendChild(hint);
   document.getElementById("stream-prof-row").style.display = '';
+
+  const previewHint = document.createElement('div');
+  previewHint.className = 'stream-prof-hint';
+  previewHint.textContent = 'External VLC: Play opens vlc:// in VLC (use pass profile). For fullscreen on Pi, run once: sh scripts/install-vlc-fullscreen-handler.sh from the TVHadmin folder.';
+  const previewRow = document.querySelector('select[name="PREVIEW_PLAYER"]');
+  if (previewRow && previewRow.parentNode) previewRow.parentNode.appendChild(previewHint);
 
   reloadForm(form, cookies);
 
