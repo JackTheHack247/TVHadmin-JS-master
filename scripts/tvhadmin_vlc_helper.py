@@ -278,11 +278,41 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
 
+class ReuseHTTPServer(HTTPServer):
+    allow_reuse_address = True
+
+
+def port_in_use_error(err):
+    if getattr(err, "errno", None) in (98, 48):
+        return True
+    if getattr(err, "winerror", None) == 10048:
+        return True
+    return False
+
+
 def main():
     port = DEFAULT_PORT
     if len(sys.argv) > 1:
         port = int(sys.argv[1])
-    server = HTTPServer((BIND, port), Handler)
+    try:
+        server = ReuseHTTPServer((BIND, port), Handler)
+    except OSError as exc:
+        if port_in_use_error(exc):
+            sys.stderr.write(
+                "[tvhadmin-vlc-helper] Port %s is already in use on %s.\n"
+                % (port, BIND)
+            )
+            sys.stderr.write(
+                "  If the helper is already running, you do not need to start it again.\n"
+                "  Check: curl -s http://127.0.0.1:%s/health\n"
+                % port
+            )
+            sys.stderr.write(
+                "  To restart after an update: pkill -f tvhadmin_vlc_helper.py\n"
+                "  then run start-vlc-helper.sh again, or: sh start-vlc-helper.sh --restart\n"
+            )
+            raise SystemExit(1)
+        raise
     print("TVHadmin VLC helper on http://%s:%s (Ctrl+C to stop)" % (BIND, port), flush=True)
     try:
         server.serve_forever()
