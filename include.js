@@ -1524,21 +1524,20 @@ async function vlc_helper_stop() {
 
 function is_m_key(e) {
   if (!e) return false;
+  if (e.ctrlKey || e.altKey || e.metaKey) return false;
   if (e.key === 'm' || e.key === 'M') return true;
-  if (e.keyCode === 77 && !e.ctrlKey && !e.altKey && !e.metaKey) return true;
+  if (e.code === 'KeyM') return true;
+  if (e.keyCode === 77) return true;
   return false;
 }
 
 function enter_menu_fullscreen_mode() {
   document.body.classList.add('menu-mode');
   focus_menu();
-  const el = document.getElementById('container');
-  if (el) request_panel_fullscreen(el);
 }
 
 function exit_menu_fullscreen_mode() {
   document.body.classList.remove('menu-mode');
-  exit_panel_fullscreen();
   focus_content();
 }
 
@@ -1552,16 +1551,8 @@ function toggle_menu_fullscreen_mode() {
 }
 
 function handle_menu_mode_keydown(e) {
-  if (e.target.matches('input, textarea, select')) return false;
-
-  if (is_m_key(e)) {
-    e.preventDefault();
-    e.stopImmediatePropagation();
-    toggle_menu_fullscreen_mode();
-    return true;
-  }
-
   if (!document.body.classList.contains('menu-mode')) return false;
+  if (e.target.matches('input, textarea, select')) return false;
 
   if (e.key === 'Escape' || e.keyCode === 27) {
     e.preventDefault();
@@ -1597,14 +1588,14 @@ function init_menu_fullscreen_mode() {
   if (window._tvh_menu_fs_init) return;
   window._tvh_menu_fs_init = true;
   document.body.classList.remove('menu-mode');
-  exit_panel_fullscreen();
-  document.addEventListener('fullscreenchange', sync_menu_fullscreen_mode);
-  document.addEventListener('mozfullscreenchange', sync_menu_fullscreen_mode);
-  document.addEventListener('webkitfullscreenchange', sync_menu_fullscreen_mode);
-}
-
-function sync_menu_fullscreen_mode() {
-  if (!document.body.classList.contains('menu-mode')) return;
+  window.addEventListener('keydown', function(e) {
+    if (e.repeat) return;
+    if (!is_m_key(e)) return;
+    if (e.target && e.target.matches && e.target.matches('input, textarea, select')) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    toggle_menu_fullscreen_mode();
+  }, true);
 }
 
 async function play_in_external_vlc(uuid, name, type, forceProfile) {
