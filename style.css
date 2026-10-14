@@ -512,6 +512,45 @@ body.menu-mode #navigation .nav_key {
 	font-size: clamp(11px, 0.9vw, 15px);
 }
 
+#menu-mode-bar {
+	display: none;
+	position: fixed;
+	top: 0;
+	left: 0;
+	right: 0;
+	z-index: 3000;
+	align-items: center;
+	justify-content: space-between;
+	gap: 1vw;
+	padding: 0.8vh 1.2vw;
+	background: #2a2a2a;
+	border-bottom: 2px solid var(--wb-border);
+	color: #eee;
+	font-size: clamp(12px, 0.95vw, 16px);
+}
+
+#menu-mode-bar .menu-mode-hint {
+	flex: 1;
+	text-align: center;
+	font-weight: normal;
+	opacity: 0.95;
+}
+
+#menu-mode-bar .menu-mode-focus,
+#menu-mode-bar .menu-mode-close {
+	font-size: clamp(12px, 0.95vw, 16px);
+	padding: 0.5vh 1vw;
+	cursor: pointer;
+	background: var(--wb-content-dark);
+	color: #fff;
+	border: 1px solid #666;
+	border-radius: 3px;
+}
+
+body.menu-mode #navigation {
+	padding-top: 5vh;
+}
+
 #tvh-vlc-hint {
 	position: fixed;
 	bottom: 1.5vh;

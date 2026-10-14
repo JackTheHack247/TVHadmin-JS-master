@@ -331,6 +331,16 @@ function init_layout() {
   }
   if (layout.dataset.layoutReady === '1') return;
   layout.dataset.layoutReady = '1';
+  ensure_menu_mode_bar();
+  var previewVideo = document.getElementById('live-preview');
+  if (previewVideo) {
+    previewVideo.addEventListener('keydown', function(e) {
+      if (is_m_key(e)) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+    }, true);
+  }
   init_preview_persist();
   init_spectrum();
   init_menu_fullscreen_mode();
@@ -1531,30 +1541,71 @@ function is_m_key(e) {
   return false;
 }
 
+function ensure_menu_mode_bar() {
+  var bar = document.getElementById('menu-mode-bar');
+  if (bar) return bar;
+  bar = document.createElement('div');
+  bar.id = 'menu-mode-bar';
+  bar.innerHTML = '<button type="button" id="menu-mode-focus" class="menu-mode-focus">Menu</button>' +
+    '<span class="menu-mode-hint">Esc or Backspace to close · click here if M mutes VLC</span>' +
+    '<button type="button" id="menu-mode-close" class="menu-mode-close">Close</button>';
+  document.body.appendChild(bar);
+  bar.querySelector('#menu-mode-close').addEventListener('click', exit_menu_fullscreen_mode);
+  bar.querySelector('#menu-mode-focus').addEventListener('click', function() {
+    this.focus();
+    focus_menu();
+  });
+  return bar;
+}
+
+function show_menu_mode_bar() {
+  var bar = ensure_menu_mode_bar();
+  bar.style.display = 'flex';
+  var btn = document.getElementById('menu-mode-focus');
+  if (btn) btn.focus();
+}
+
+function hide_menu_mode_bar() {
+  var bar = document.getElementById('menu-mode-bar');
+  if (bar) bar.style.display = 'none';
+}
+
+function is_menu_close_key(e) {
+  if (!e) return false;
+  if (e.key === 'Escape' || e.keyCode === 27) return true;
+  if (e.key === 'Backspace' || e.keyCode === 8) return true;
+  return false;
+}
+
 function enter_menu_fullscreen_mode() {
   document.body.classList.add('menu-mode');
   focus_menu();
+  show_menu_mode_bar();
+  try { window.focus(); } catch (err) {}
 }
 
 function exit_menu_fullscreen_mode() {
   document.body.classList.remove('menu-mode');
+  hide_menu_mode_bar();
   focus_content();
 }
 
-function toggle_menu_fullscreen_mode() {
-  if (document.body.classList.contains('menu-mode')) {
-    exit_menu_fullscreen_mode();
-  } else {
-    if (cookies.VLC_STOP_ON_MENU === '1') void vlc_helper_stop();
-    enter_menu_fullscreen_mode();
-  }
+function open_menu_fullscreen_mode() {
+  if (cookies.VLC_STOP_ON_MENU === '1') void vlc_helper_stop();
+  enter_menu_fullscreen_mode();
 }
 
 function handle_menu_mode_keydown(e) {
   if (!document.body.classList.contains('menu-mode')) return false;
   if (e.target.matches('input, textarea, select')) return false;
 
-  if (e.key === 'Escape' || e.keyCode === 27) {
+  if (is_m_key(e)) {
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    return true;
+  }
+
+  if (is_menu_close_key(e)) {
     e.preventDefault();
     e.stopImmediatePropagation();
     exit_menu_fullscreen_mode();
@@ -1590,11 +1641,22 @@ function init_menu_fullscreen_mode() {
   document.body.classList.remove('menu-mode');
   window.addEventListener('keydown', function(e) {
     if (e.repeat) return;
+    if (document.body.classList.contains('menu-mode')) {
+      if (is_menu_close_key(e) && !(e.target && e.target.matches && e.target.matches('input, textarea, select'))) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        exit_menu_fullscreen_mode();
+      } else if (is_m_key(e)) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+      }
+      return;
+    }
     if (!is_m_key(e)) return;
     if (e.target && e.target.matches && e.target.matches('input, textarea, select')) return;
     e.preventDefault();
     e.stopImmediatePropagation();
-    toggle_menu_fullscreen_mode();
+    open_menu_fullscreen_mode();
   }, true);
 }
 
@@ -1679,7 +1741,8 @@ function init_navigation() {
       ['→', 'Enter page'],
       ['←', 'Menu'],
       ['Enter', 'Select / play'],
-      ['M', 'Full menu screen']
+      ['M', 'Open menu'],
+      ['Esc', 'Close menu']
     ];
     const kbEl = document.createElement('div');
     kbEl.className = 'nav_keybinds';
