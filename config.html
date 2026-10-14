@@ -97,10 +97,17 @@
               <td class="col_value"><input type="text" name="VLC_HELPER_PORT" size="6" placeholder="8765"></td>
             </tr>
             <tr class="row_alt">
+              <td class="col_label">VLC fullscreen</td>
+              <td class="col_value">
+                <input type="checkbox" name="VLC_FULLSCREEN" value="1" checked>
+                <span class="config-inline-hint">Uncheck if fullscreen VLC hides the browser and you cannot open the menu (VLC plays in a window instead).</span>
+              </td>
+            </tr>
+            <tr class="row_alt">
               <td class="col_label">Close VLC on menu</td>
               <td class="col_value">
                 <input type="checkbox" name="VLC_STOP_ON_MENU" value="1">
-                <span class="config-inline-hint">If checked, M closes VLC when opening the menu (default: VLC keeps playing).</span>
+                <span class="config-inline-hint">If checked, opening the menu stops VLC. Otherwise the helper tries to raise the browser (<code>sudo apt install wmctrl</code> on the Pi).</span>
               </td>
             </tr>
             <tr class="row_alt" id="prof-row" style="display:none">

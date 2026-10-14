@@ -2,7 +2,7 @@ const COOKIE_DEFAULTS = {
   "selected_channels": [],
   "SORT": "1", "CSORT": "0", "TIMESPAN": "2", "EPGSTART": "0", "THEME": "0", "UUID": "None",
   "SUUID": "", "CLASHDET": "0", "TVH_URL": "", "REFR": "", "HOME": "now", "PREVIEW_PLAYER": "external",
-  "VLC_HELPER": "1", "VLC_HELPER_PORT": "8765", "VLC_STOP_ON_MENU": "0"
+  "VLC_HELPER": "1", "VLC_HELPER_PORT": "8765", "VLC_FULLSCREEN": "1", "VLC_STOP_ON_MENU": "0"
 };
 
 var WHATSON_TITLE_MAX_CHARS = 20;
@@ -196,7 +196,7 @@ function show_vlc_launch_hint(absUrl, mode) {
   if (mode === 'helper') {
     body =
       '<div class="tvh-vlc-hint-title">VLC started</div>' +
-      '<div class="tvh-vlc-hint-text">Fullscreen VLC — press M for menu (VLC stays on). Play another channel to switch.</div>';
+      '<div class="tvh-vlc-hint-text">Use the <b>Menu</b> button (bottom-right), ☰ in the page title, <b>Home</b>, <b>F2</b>, or <b>←</b> to open the full menu. <b>Esc</b> closes it. Pick another channel to switch in VLC.</div>';
   } else if (mode === 'helper-missing') {
     body =
       '<div class="tvh-vlc-hint-title">VLC helper not running</div>' +
@@ -242,9 +242,13 @@ async function launch_external_vlc(streamUrl, label) {
     try {
       var q = helper + '/play?url=' + encodeURIComponent(abs);
       if (label) q += '&title=' + encodeURIComponent(String(label).slice(0, 200));
+      if (cookies.VLC_FULLSCREEN === '0') q += '&fullscreen=0';
       const response = await fetch(q, { method: 'GET', mode: 'cors', cache: 'no-store' });
-      if (response.ok) return;
-      log_preview_issue('external-vlc', 'helper HTTP ' + response.status, playUrl);
+      if (response.ok) {
+        show_vlc_launch_hint(abs, 'helper');
+        return;
+      }
+      log_preview_issue('external-vlc', 'helper HTTP ' + response.status, abs);
     } catch (e) {
       log_preview_issue('external-vlc', 'helper: ' + (e.message || e), helper);
     }
@@ -265,8 +269,11 @@ function open_external_player() {
 }
 
 function sync_layout_for_preview_player() {
-  if (preview_player_mode() === 'external') document.body.classList.add('layout-no-preview');
+  var external = preview_player_mode() === 'external';
+  if (external) document.body.classList.add('layout-no-preview');
   else document.body.classList.remove('layout-no-preview');
+  var fab = document.getElementById('tv-menu-fab');
+  if (fab) fab.style.display = external ? '' : 'none';
 }
 
 function show_tvh_error(message) {
@@ -331,19 +338,9 @@ function init_layout() {
   }
   if (layout.dataset.layoutReady === '1') return;
   layout.dataset.layoutReady = '1';
-  ensure_menu_mode_bar();
-  var previewVideo = document.getElementById('live-preview');
-  if (previewVideo) {
-    previewVideo.addEventListener('keydown', function(e) {
-      if (is_m_key(e)) {
-        e.preventDefault();
-        e.stopPropagation();
-      }
-    }, true);
-  }
   init_preview_persist();
   init_spectrum();
-  init_menu_fullscreen_mode();
+  init_menu_overlay();
   sync_layout_for_preview_player();
   show_codec_hint();
   const ext = document.getElementById('open-external-player');
@@ -1532,42 +1529,23 @@ async function vlc_helper_stop() {
   } catch (e) {}
 }
 
-function is_m_key(e) {
-  if (!e) return false;
-  if (e.ctrlKey || e.altKey || e.metaKey) return false;
-  if (e.key === 'm' || e.key === 'M') return true;
-  if (e.code === 'KeyM') return true;
-  if (e.keyCode === 77) return true;
+async function vlc_helper_raise_ui() {
+  const helper = vlc_helper_base();
+  if (!helper) return;
+  try {
+    await fetch(helper + '/raise', { method: 'GET', mode: 'cors', cache: 'no-store' });
+  } catch (e) {}
+}
+
+function is_menu_overlay_open() {
+  return document.body.classList.contains('menu-overlay-open');
+}
+
+function is_menu_open_key(e) {
+  if (!e || e.ctrlKey || e.altKey || e.metaKey) return false;
+  if (e.key === 'Home' || e.keyCode === 36) return true;
+  if (e.key === 'F2' || e.keyCode === 113) return true;
   return false;
-}
-
-function ensure_menu_mode_bar() {
-  var bar = document.getElementById('menu-mode-bar');
-  if (bar) return bar;
-  bar = document.createElement('div');
-  bar.id = 'menu-mode-bar';
-  bar.innerHTML = '<button type="button" id="menu-mode-focus" class="menu-mode-focus">Menu</button>' +
-    '<span class="menu-mode-hint">Esc or Backspace to close · click here if M mutes VLC</span>' +
-    '<button type="button" id="menu-mode-close" class="menu-mode-close">Close</button>';
-  document.body.appendChild(bar);
-  bar.querySelector('#menu-mode-close').addEventListener('click', exit_menu_fullscreen_mode);
-  bar.querySelector('#menu-mode-focus').addEventListener('click', function() {
-    this.focus();
-    focus_menu();
-  });
-  return bar;
-}
-
-function show_menu_mode_bar() {
-  var bar = ensure_menu_mode_bar();
-  bar.style.display = 'flex';
-  var btn = document.getElementById('menu-mode-focus');
-  if (btn) btn.focus();
-}
-
-function hide_menu_mode_bar() {
-  var bar = document.getElementById('menu-mode-bar');
-  if (bar) bar.style.display = 'none';
 }
 
 function is_menu_close_key(e) {
@@ -1577,38 +1555,42 @@ function is_menu_close_key(e) {
   return false;
 }
 
-function enter_menu_fullscreen_mode() {
-  document.body.classList.add('menu-mode');
+function open_menu_overlay() {
+  if (is_menu_overlay_open()) return;
+  if (cookies.VLC_STOP_ON_MENU === '1') void vlc_helper_stop();
+  else if (preview_player_mode() === 'external') void vlc_helper_raise_ui();
+  try { if (window.focus) window.focus(); } catch (e) {}
+  document.body.classList.add('menu-overlay-open');
+  var head = document.getElementById('tv-menu-head');
+  if (head) head.style.display = 'flex';
+  var fab = document.getElementById('tv-menu-fab');
+  if (fab) fab.textContent = 'Close menu';
   focus_menu();
-  show_menu_mode_bar();
-  try { window.focus(); } catch (err) {}
 }
 
-function exit_menu_fullscreen_mode() {
-  document.body.classList.remove('menu-mode');
-  hide_menu_mode_bar();
+function close_menu_overlay() {
+  if (!is_menu_overlay_open()) return;
+  document.body.classList.remove('menu-overlay-open');
+  var head = document.getElementById('tv-menu-head');
+  if (head) head.style.display = 'none';
+  var fab = document.getElementById('tv-menu-fab');
+  if (fab) fab.textContent = 'Menu';
   focus_content();
 }
 
-function open_menu_fullscreen_mode() {
-  if (cookies.VLC_STOP_ON_MENU === '1') void vlc_helper_stop();
-  enter_menu_fullscreen_mode();
+function toggle_menu_overlay() {
+  if (is_menu_overlay_open()) close_menu_overlay();
+  else open_menu_overlay();
 }
 
-function handle_menu_mode_keydown(e) {
-  if (!document.body.classList.contains('menu-mode')) return false;
+function handle_menu_overlay_keydown(e) {
+  if (!is_menu_overlay_open()) return false;
   if (e.target.matches('input, textarea, select')) return false;
-
-  if (is_m_key(e)) {
-    e.preventDefault();
-    e.stopImmediatePropagation();
-    return true;
-  }
 
   if (is_menu_close_key(e)) {
     e.preventDefault();
     e.stopImmediatePropagation();
-    exit_menu_fullscreen_mode();
+    close_menu_overlay();
     return true;
   }
 
@@ -1632,32 +1614,66 @@ function handle_menu_mode_keydown(e) {
     navigate_menu_item(menu_index);
     return true;
   }
+  if (e.key === 'ArrowRight' || e.keyCode === 39) {
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    close_menu_overlay();
+    return true;
+  }
   return true;
 }
 
-function init_menu_fullscreen_mode() {
-  if (window._tvh_menu_fs_init) return;
-  window._tvh_menu_fs_init = true;
-  document.body.classList.remove('menu-mode');
-  window.addEventListener('keydown', function(e) {
-    if (e.repeat) return;
-    if (document.body.classList.contains('menu-mode')) {
-      if (is_menu_close_key(e) && !(e.target && e.target.matches && e.target.matches('input, textarea, select'))) {
-        e.preventDefault();
-        e.stopImmediatePropagation();
-        exit_menu_fullscreen_mode();
-      } else if (is_m_key(e)) {
-        e.preventDefault();
-        e.stopImmediatePropagation();
-      }
-      return;
-    }
-    if (!is_m_key(e)) return;
+function on_menu_overlay_global_key(e) {
+  if (e.target && e.target.matches && e.target.matches('input, textarea, select')) {
+    if (!is_menu_overlay_open()) return;
+  }
+  if (e.repeat) return;
+
+  if (is_menu_open_key(e)) {
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    toggle_menu_overlay();
+    return;
+  }
+
+  if (is_menu_overlay_open() && is_menu_close_key(e)) {
     if (e.target && e.target.matches && e.target.matches('input, textarea, select')) return;
     e.preventDefault();
     e.stopImmediatePropagation();
-    open_menu_fullscreen_mode();
-  }, true);
+    close_menu_overlay();
+  }
+}
+
+function init_menu_overlay() {
+  if (window._tvh_menu_overlay_init) return;
+  window._tvh_menu_overlay_init = true;
+
+  var fab = document.createElement('button');
+  fab.id = 'tv-menu-fab';
+  fab.type = 'button';
+  fab.textContent = 'Menu';
+  fab.title = 'Open full menu (also Home, F2, or ←). Esc closes.';
+  if (preview_player_mode() !== 'external') fab.style.display = 'none';
+  fab.addEventListener('click', function(ev) {
+    ev.preventDefault();
+    toggle_menu_overlay();
+  });
+  document.body.appendChild(fab);
+
+  var head = document.createElement('div');
+  head.id = 'tv-menu-head';
+  head.style.display = 'none';
+  head.innerHTML =
+    '<span class="tv-menu-head-title">TVHadmin menu</span>' +
+    '<span class="tv-menu-head-hint">↑↓ move · Enter open page · Esc close</span>' +
+    '<button type="button" id="tv-menu-head-close">Close</button>';
+  document.body.appendChild(head);
+  head.querySelector('#tv-menu-head-close').addEventListener('click', function(ev) {
+    ev.preventDefault();
+    close_menu_overlay();
+  });
+
+  document.addEventListener('keydown', on_menu_overlay_global_key, true);
 }
 
 async function play_in_external_vlc(uuid, name, type, forceProfile) {
@@ -1669,9 +1685,7 @@ async function play_in_external_vlc(uuid, name, type, forceProfile) {
   const url = await resolve_play_ticket_url(uuid, type, profileName, title);
   if (!url) return;
   store_preview_channel(uuid, name, url, 0, type);
-  if (document.body.classList.contains('menu-mode')) {
-    exit_menu_fullscreen_mode();
-  }
+  if (is_menu_overlay_open()) close_menu_overlay();
   await launch_external_vlc(url, name);
 }
 
@@ -1709,13 +1723,12 @@ function play_recording(uuid, title) {
 }
 
 function init_navigation() {
-  var mytop=document.getElementById("mobmenu");
+  var mytop = document.getElementById('mobmenu');
   if (mytop) {
-    mytop.addEventListener('click', function() {
-      var mynav=document.getElementById("navigation");
-      if (mynav.classList.contains('focus'))
-        mynav.classList.remove('focus');
-      else mynav.classList.add('focus');
+    mytop.addEventListener('click', function(ev) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      open_menu_overlay();
     });
   }
   const items = [
@@ -1739,9 +1752,10 @@ function init_navigation() {
     const keybinds = [
       ['↑ ↓', 'Navigate'],
       ['→', 'Enter page'],
-      ['←', 'Menu'],
+      ['←', 'Full menu'],
+      ['→', 'Close menu'],
       ['Enter', 'Select / play'],
-      ['M', 'Open menu'],
+      ['Home', 'Menu on/off'],
       ['Esc', 'Close menu']
     ];
     const kbEl = document.createElement('div');
@@ -1757,7 +1771,7 @@ function init_navigation() {
     nav.addEventListener('click', function(e) {
       const link = e.target.closest('a');
       if (link && link.getAttribute('href') && link.getAttribute('href') !== '#') {
-        if (document.body.classList.contains('menu-mode')) exit_menu_fullscreen_mode();
+        if (is_menu_overlay_open()) close_menu_overlay();
         save_preview_position();
       }
     });
@@ -1954,7 +1968,7 @@ function handle_content_keydown(e) {
   if (!content_nav || menu_focus) return;
   if (content_nav.fieldEdit) return;
   if (field_blocks_navigation(e.target)) return;
-  if (document.body.classList.contains('menu-mode')) return;
+  if (is_menu_overlay_open()) return;
 
   if (e.key === 'Escape') {
     return;
@@ -2094,7 +2108,7 @@ function init_menu_keyboard() {
   }
 
   document.addEventListener('keydown', function(e) {
-    if (handle_menu_mode_keydown(e)) return;
+    if (handle_menu_overlay_keydown(e)) return;
 
     const editing = content_nav && content_nav.fieldEdit;
 
@@ -2179,7 +2193,11 @@ function init_menu_keyboard() {
         return;
       }
       e.preventDefault();
-      focus_menu();
+      if (preview_player_mode() === 'external' && !is_menu_overlay_open()) {
+        open_menu_overlay();
+      } else {
+        focus_menu();
+      }
       return;
     }
 

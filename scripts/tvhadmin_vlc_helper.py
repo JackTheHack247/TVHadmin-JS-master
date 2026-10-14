@@ -14,6 +14,7 @@ Requires: vlc in PATH
 from __future__ import print_function
 
 import json
+import os
 import re
 import subprocess
 import sys
@@ -57,14 +58,15 @@ def url_is_allowed(url):
     return bool(STREAM_PATH.match(path))
 
 
-def launch_vlc(url, title=None):
+def launch_vlc(url, title=None, fullscreen=True):
     cmd = [
         "vlc",
-        "--fullscreen",
         "--one-instance",
         "--one-instance-when-started",
         "--no-playlist-enqueue",
     ]
+    if fullscreen:
+        cmd.append("--fullscreen")
     if title:
         safe = re.sub(r"[\r\n\x00]", " ", title).strip()[:200]
         if safe:
@@ -88,6 +90,57 @@ def stop_vlc():
         )
     except Exception:
         pass
+
+
+def raise_browser_window():
+    """Bring the TVHadmin browser window to the front (VLC fullscreen hides it otherwise)."""
+    titles = [
+        "TVHadmin",
+        "Pale Moon",
+        "pale moon",
+        "Firefox",
+        "Chromium",
+        "TVHeadend",
+    ]
+    extra = os.environ.get("TVHADMIN_WM_TITLE", "").strip()
+    if extra:
+        titles.insert(0, extra)
+    for title in titles:
+        try:
+            if (
+                subprocess.call(
+                    ["wmctrl", "-a", title],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                == 0
+            ):
+                return True
+        except FileNotFoundError:
+            break
+        except Exception:
+            pass
+    try:
+        if (
+            subprocess.call(
+                [
+                    "xdotool",
+                    "search",
+                    "--name",
+                    "TVHadmin",
+                    "windowactivate",
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            == 0
+        ):
+            return True
+    except FileNotFoundError:
+        pass
+    except Exception:
+        pass
+    return False
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -123,7 +176,7 @@ class Handler(BaseHTTPRequestHandler):
                 pass
         return ""
 
-    def _play(self, url, title=None):
+    def _play(self, url, title=None, fullscreen=True):
         url = (url or "").strip()
         if not url:
             self.send_response(400)
@@ -140,7 +193,7 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(b'{"ok":false,"error":"url not allowed"}')
             return
         try:
-            launch_vlc(url, title=title)
+            launch_vlc(url, title=title, fullscreen=fullscreen)
         except FileNotFoundError:
             self.send_response(500)
             self._cors()
@@ -169,14 +222,16 @@ class Handler(BaseHTTPRequestHandler):
         if qs.get("url"):
             url = unquote(qs["url"][0])
         title = unquote(qs["title"][0]) if qs.get("title") else None
-        return url, title
+        fs = qs.get("fullscreen", ["1"])[0]
+        fullscreen = fs not in ("0", "false", "no")
+        return url, title, fullscreen
 
     def do_GET(self):
         if self.path.startswith("/play"):
-            url, title = self._read_play_args()
+            url, title, fullscreen = self._read_play_args()
             if not url:
                 url = self._read_url()
-            self._play(url, title=title)
+            self._play(url, title=title, fullscreen=fullscreen)
             return
         if self.path.startswith("/stop"):
             stop_vlc()
@@ -185,6 +240,15 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(b'{"ok":true}')
+            return
+        if self.path.startswith("/raise"):
+            ok = raise_browser_window()
+            self.send_response(200)
+            self._cors()
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            msg = json.dumps({"ok": ok}).encode("utf-8")
+            self.wfile.write(msg)
             return
         if self.path.startswith("/health"):
             self.send_response(200)
