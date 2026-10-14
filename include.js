@@ -398,18 +398,54 @@ var cached_stream_profile_vals = null;
 var BROWSER_STREAM_PROFILES = [
   'webtv-h264-aac-mp4',
   'webtv-h264-vorbis-mp4',
-  'webtv-h264-aac-matroska',
-  'matroska',
-  'audio',
-  'pass'
+  'audio'
 ];
+
+var preview_generation = 0;
+
+function is_heavy_or_unsafe_browser_profile(p) {
+  if (!p) return true;
+  var lower = String(p).toLowerCase();
+  if (/vp8|webm|mpegts|matroska/.test(lower)) return true;
+  if (lower === 'pass') return true;
+  return false;
+}
 
 function best_browser_stream_profile_hint() {
   const available = cached_stream_profile_vals || [];
   for (let i = 0; i < BROWSER_STREAM_PROFILES.length; i++) {
     if (available.indexOf(BROWSER_STREAM_PROFILES[i]) !== -1) return BROWSER_STREAM_PROFILES[i];
   }
-  return available[0] || 'webtv-h264-vorbis-mp4';
+  for (let j = 0; j < available.length; j++) {
+    if (!is_heavy_or_unsafe_browser_profile(available[j])) return available[j];
+  }
+  return 'webtv-h264-vorbis-mp4';
+}
+
+function pick_stream_profile(name, uuid) {
+  const available = cached_stream_profile_vals || [];
+  function has(p) {
+    return p && available.indexOf(p) !== -1;
+  }
+  if (cookies.SUUID && has(cookies.SUUID)) return cookies.SUUID;
+  if (is_radio_channel(name, uuid) && has('audio')) return 'audio';
+  for (let i = 0; i < BROWSER_STREAM_PROFILES.length; i++) {
+    if (has(BROWSER_STREAM_PROFILES[i])) return BROWSER_STREAM_PROFILES[i];
+  }
+  for (let j = 0; j < available.length; j++) {
+    if (!is_heavy_or_unsafe_browser_profile(available[j])) return available[j];
+  }
+  return '';
+}
+
+function stop_preview_stream(video) {
+  if (!video) return;
+  video.pause();
+  try {
+    video.removeAttribute('src');
+    video.load();
+  } catch (e) {}
+  video._amConnected = false;
 }
 
 async function get_stream_profiles() {
@@ -447,34 +483,26 @@ async function ensure_stream_profile() {
   if (cookies.SUUID && cached_stream_profile_vals && cached_stream_profile_vals.indexOf(cookies.SUUID) === -1) {
     cookies.SUUID = '';
   }
-  if (cookies.SUUID) return;
-  for (let i = 0; i < BROWSER_STREAM_PROFILES.length; i++) {
-    const match = profiles.find(function(p) { return p.val === BROWSER_STREAM_PROFILES[i]; });
-    if (match) {
-      cookies.SUUID = match.val;
-      return;
-    }
+  if (cookies.SUUID && is_heavy_or_unsafe_browser_profile(cookies.SUUID)) {
+    cookies.SUUID = '';
+    save_settings({ SUUID: '' });
   }
-  cookies.SUUID = profiles[0].val;
+  if (cookies.SUUID) return;
+  const picked = best_browser_stream_profile_hint();
+  if (cached_stream_profile_vals.indexOf(picked) !== -1) {
+    cookies.SUUID = picked;
+    return;
+  }
+  const safe = cached_stream_profile_vals.find(function(p) {
+    return !is_heavy_or_unsafe_browser_profile(p);
+  });
+  cookies.SUUID = safe || cached_stream_profile_vals[0] || '';
 }
 
-function preview_profile_attempts(name, uuid) {
-  const available = cached_stream_profile_vals || [];
-  const list = [];
-  function add(profile) {
-    if (!profile) return;
-    if (available.length && available.indexOf(profile) === -1) return;
-    if (list.indexOf(profile) === -1) list.push(profile);
-  }
-  if (is_radio_channel(name, uuid)) add('audio');
-  add(cookies.SUUID);
-  BROWSER_STREAM_PROFILES.forEach(add);
-  if (!list.length && available.length) {
-    available.forEach(function(profile) {
-      add(profile);
-    });
-  }
-  return list;
+function log_preview_issue(kind, detail, streamUrl) {
+  try {
+    console.warn('[TVHadmin preview]', kind + ':', detail, streamUrl || '');
+  } catch (e) {}
 }
 
 function describe_play_rejection(err) {
@@ -485,7 +513,7 @@ function describe_play_rejection(err) {
 
 function describe_video_element_error(video, profileName) {
   if (!video || !video.error) {
-    return 'Stream failed. If TVHeadend logs show libav or AVCodec errors, the server transcoder failed (not the browser). Try Config → Stream Profile: ' + best_browser_stream_profile_hint() + '.';
+    return 'Stream failed. TVHeadend libav/AVCodec errors mean the server transcoder failed — not JavaScript. Set Config → Stream Profile to ' + best_browser_stream_profile_hint() + ' and ensure ffmpeg with H.264 works on the Pi.';
   }
   const code = video.error.code;
   const prof = profileName ? (' Profile: ' + profileName + '.') : '';
@@ -495,21 +523,15 @@ function describe_video_element_error(video, profileName) {
     case 2:
       return 'Network error — could not load stream.' + prof + ' Check TVHeadend is running and you are logged in at :9981.';
     case 3:
-      return 'Decode error — audio/video codec problem.' + prof + ' TVHeadend libav/AVCodec log lines mean the server transcoder failed; pick webtv-h264-vorbis-mp4 or install ffmpeg on the Pi.';
+      return 'Decode error — codec problem.' + prof + ' Server transcode (libav) or browser decode failed.';
     case 4:
       if (!browser_supports_h264_mp4()) {
-        return 'Browser codec — Pale Moon cannot play H.264 MP4 on this Pi (install ffmpeg/libavcodec). Stream profile' + prof;
+        return 'Browser codec — Pale Moon on this Pi cannot play H.264 MP4 (install ffmpeg/libavcodec).' + prof;
       }
-      return 'Format not supported — this browser cannot play the stream container/codec.' + prof + ' Use webtv-h264-vorbis-mp4, not matroska/pass.';
+      return 'Format not supported in browser.' + prof + ' Use webtv-h264-vorbis-mp4 only; avoid matroska/pass.';
     default:
       return (video.error.message || 'Playback error') + prof;
   }
-}
-
-function log_preview_issue(kind, detail, streamUrl) {
-  try {
-    console.warn('[TVHadmin preview]', kind + ':', detail, streamUrl || '');
-  } catch (e) {}
 }
 
 function show_preview_error_message(message, kind) {
@@ -538,6 +560,10 @@ function play_preview(video, name, url, seekTime, uuid) {
   const placeholder = document.querySelector('#video-panel .video-placeholder');
   stop_spectrum();
   if (!video) return;
+  preview_generation++;
+  var playId = preview_generation;
+  stop_preview_stream(video);
+
   const type = sessionStorage.getItem('preview_type') || 'channel';
   const channelUuid = uuid || sessionStorage.getItem('preview_uuid');
   if (!url && !channelUuid) return;
@@ -545,20 +571,24 @@ function play_preview(video, name, url, seekTime, uuid) {
   const live = sessionStorage.getItem('preview_live') === '1' || is_live_preview(url, type);
   const time = live ? 0 : (Number(seekTime) || 0);
   const seekable = !live && url && is_seekable_preview(url);
-  const useProfileFallback = type !== 'recording' && !!channelUuid;
-  const profiles = useProfileFallback ? preview_profile_attempts(name, channelUuid) : [null];
-  var profileIndex = 0;
+  const profileName = (type !== 'recording' && channelUuid) ? pick_stream_profile(name, channelUuid) : (cookies.SUUID || '');
+  let streamUrl = url;
+  if (!streamUrl && channelUuid) {
+    streamUrl = build_preview_url(channelUuid, type, profileName);
+  }
+  if (!streamUrl) {
+    show_preview_error_message('No stream URL or profile.', 'config');
+    return;
+  }
+  if (is_heavy_or_unsafe_browser_profile(profileName) && type !== 'recording') {
+    show_preview_error_message('Stream profile "' + profileName + '" often breaks the Pi transcoder. In Config choose webtv-h264-vorbis-mp4 or audio (radio).', 'transcode');
+    return;
+  }
+
   var started = false;
   var ready = false;
   var stallTimer = null;
-
-  function show_preview_error(message, kind) {
-    show_preview_error_message(message, kind);
-  }
-
-  function current_profile_name() {
-    return useProfileFallback ? (profiles[profileIndex] || cookies.SUUID || 'default') : '';
-  }
+  var loggedError = false;
 
   function clear_stall_timer() {
     if (stallTimer) {
@@ -567,36 +597,26 @@ function play_preview(video, name, url, seekTime, uuid) {
     }
   }
 
-  function arm_stall_timer(streamUrl) {
-    clear_stall_timer();
-    stallTimer = setTimeout(function() {
-      if (started && video.readyState >= 2) return;
-      log_preview_issue('stall', 'No data after 20s — likely TVHeadend transcode (libav) or network', streamUrl);
-      show_preview_error(
-        'Stream stalled — no video/audio data. This often matches libav/AVCodec errors in the TVHeadend log (server transcoder). Try stream profile webtv-h264-vorbis-mp4' + (is_radio_channel(name, channelUuid) ? ' or audio for radio' : '') + '.',
-        'transcode'
-      );
-    }, 20000);
-  }
-
-  function stream_url_for_attempt() {
-    if (useProfileFallback) {
-      return build_preview_url(channelUuid, type, profiles[profileIndex]);
+  function show_error(message, kind) {
+    if (playId !== preview_generation) return;
+    if (!loggedError) {
+      loggedError = true;
+      log_preview_issue(kind || 'playback', message, streamUrl);
     }
-    return url;
+    show_preview_error_message(message, kind);
   }
 
   function playNow() {
-    if (started) return;
+    if (playId !== preview_generation || started) return;
     started = true;
     clear_stall_timer();
     video.play().then(function() {
-      if (useProfileFallback && profiles[profileIndex]) cookies.SUUID = profiles[profileIndex];
+      if (playId !== preview_generation) return;
       if (placeholder) placeholder.style.display = 'none';
       connect_spectrum(video, is_radio_channel(name, channelUuid));
     }).catch(function(err) {
-      log_preview_issue('autoplay', describe_play_rejection(err), stream_url_for_attempt());
-      show_preview_error(describe_play_rejection(err), 'browser');
+      if (playId !== preview_generation) return;
+      show_error(describe_play_rejection(err), 'browser');
       connect_spectrum(video, is_radio_channel(name, channelUuid));
     });
   }
@@ -621,68 +641,49 @@ function play_preview(video, name, url, seekTime, uuid) {
   }
 
   function onReady() {
-    if (ready) return;
+    if (playId !== preview_generation || ready) return;
     ready = true;
     video.removeEventListener('loadedmetadata', onReady);
     seekAndPlay();
   }
 
-  function reset_attempt() {
-    started = false;
-    ready = false;
+  if (placeholder) {
+    placeholder.style.display = 'block';
+    placeholder.textContent = 'Loading… (' + (profileName || 'stream') + ')';
+  }
+  video.style.display = 'block';
+  set_video_stream_attrs(video, streamUrl);
+  video._amConnected = false;
+  video.src = build_preview_src(streamUrl, seekable ? time : 0);
+
+  stallTimer = setTimeout(function() {
+    if (playId !== preview_generation || (started && video.readyState >= 2)) return;
+    show_error(
+      'No video/audio after 20s. One stream only (no profile retries). libav/AVCodec spam in the log = TVHeadend transcoder failing on the Pi — fix ffmpeg/H.264 or use VLC via Open stream below.',
+      'transcode'
+    );
+  }, 20000);
+
+  function onError() {
+    if (playId !== preview_generation) return;
+    video.removeEventListener('error', onError);
     clear_stall_timer();
-    video._amConnected = false;
-    video.removeEventListener('loadedmetadata', onReady);
-    video.removeAttribute('src');
-    try { video.load(); } catch (e) {}
+    var msg = describe_video_element_error(video, profileName);
+    msg += ' Only one profile is tried per click (to avoid flooding TVHeadend with transcode errors).';
+    show_error(msg, video.error && video.error.code === 4 ? 'codec' : 'transcode');
   }
 
-  function begin_attempt() {
-    const streamUrl = stream_url_for_attempt();
-    const profileName = current_profile_name();
-    if (!streamUrl) {
-      show_preview_error('No stream URL.', 'config');
-      return;
-    }
-    if (placeholder) {
-      placeholder.style.display = 'block';
-      placeholder.textContent = 'Loading… (' + (profileName || 'stream') + ')';
-    }
-    video.style.display = 'block';
-    set_video_stream_attrs(video, streamUrl);
-    video._amConnected = false;
-    video.src = build_preview_src(streamUrl, seekable ? time : 0);
-    arm_stall_timer(streamUrl);
-
-    function onError() {
-      const msg = describe_video_element_error(video, profileName);
-      log_preview_issue('mediaelement', msg, streamUrl);
-      video.removeEventListener('error', onError);
-      clear_stall_timer();
-      if (useProfileFallback && profileIndex + 1 < profiles.length) {
-        profileIndex++;
-        reset_attempt();
-        begin_attempt();
-        return;
-      }
-      const tried = profiles.filter(Boolean).join(', ') || profileName;
-      show_preview_error(msg + (tried ? ' Tried: ' + tried + '.' : ''), video.error && video.error.code === 4 ? 'codec' : 'playback');
-    }
-
-    function onPlaying() {
-      video.removeEventListener('playing', onPlaying);
-      clear_stall_timer();
-      if (placeholder) placeholder.style.display = 'none';
-    }
-
-    video.addEventListener('error', onError);
-    video.addEventListener('playing', onPlaying);
-
-    video.addEventListener('loadedmetadata', onReady);
-    if (video.readyState >= 1) onReady();
+  function onPlaying() {
+    if (playId !== preview_generation) return;
+    video.removeEventListener('playing', onPlaying);
+    clear_stall_timer();
+    if (placeholder) placeholder.style.display = 'none';
   }
 
-  begin_attempt();
+  video.addEventListener('error', onError);
+  video.addEventListener('playing', onPlaying);
+  video.addEventListener('loadedmetadata', onReady);
+  if (video.readyState >= 1) onReady();
 }
 
 var audio_motion = null;
