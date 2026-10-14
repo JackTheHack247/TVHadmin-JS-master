@@ -1522,36 +1522,82 @@ async function vlc_helper_stop() {
   } catch (e) {}
 }
 
+function is_m_key(e) {
+  if (!e) return false;
+  if (e.key === 'm' || e.key === 'M') return true;
+  if (e.keyCode === 77 && !e.ctrlKey && !e.altKey && !e.metaKey) return true;
+  return false;
+}
+
 function enter_menu_fullscreen_mode() {
   document.body.classList.add('menu-mode');
-  request_panel_fullscreen(document.getElementById('container'));
+  focus_menu();
+  const el = document.getElementById('container');
+  if (el) request_panel_fullscreen(el);
 }
 
 function exit_menu_fullscreen_mode() {
   document.body.classList.remove('menu-mode');
   exit_panel_fullscreen();
+  focus_content();
+}
+
+function toggle_menu_fullscreen_mode() {
+  if (document.body.classList.contains('menu-mode')) {
+    exit_menu_fullscreen_mode();
+  } else {
+    if (cookies.VLC_STOP_ON_MENU === '1') void vlc_helper_stop();
+    enter_menu_fullscreen_mode();
+  }
+}
+
+function handle_menu_mode_keydown(e) {
+  if (e.target.matches('input, textarea, select')) return false;
+
+  if (is_m_key(e)) {
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    toggle_menu_fullscreen_mode();
+    return true;
+  }
+
+  if (!document.body.classList.contains('menu-mode')) return false;
+
+  if (e.key === 'Escape' || e.keyCode === 27) {
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    exit_menu_fullscreen_mode();
+    return true;
+  }
+
+  if (!menu_focus) focus_menu();
+
+  if (e.key === 'ArrowUp' || e.keyCode === 38) {
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    navigate_menu_item(menu_index - 1);
+    return true;
+  }
+  if (e.key === 'ArrowDown' || e.keyCode === 40) {
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    navigate_menu_item(menu_index + 1);
+    return true;
+  }
+  if (e.key === 'Enter' || e.keyCode === 13) {
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    navigate_menu_item(menu_index);
+    return true;
+  }
+  return true;
 }
 
 function init_menu_fullscreen_mode() {
+  if (window._tvh_menu_fs_init) return;
+  window._tvh_menu_fs_init = true;
   document.body.classList.remove('menu-mode');
   exit_panel_fullscreen();
-  document.addEventListener('keydown', function(e) {
-    if (e.target.matches('input, textarea, select')) return;
-    if (e.key === 'm' || e.key === 'M') {
-      e.preventDefault();
-      if (document.body.classList.contains('menu-mode')) {
-        exit_menu_fullscreen_mode();
-      } else {
-        if (cookies.VLC_STOP_ON_MENU === '1') void vlc_helper_stop();
-        enter_menu_fullscreen_mode();
-      }
-      return;
-    }
-    if (e.key === 'Escape' && document.body.classList.contains('menu-mode')) {
-      e.preventDefault();
-      exit_menu_fullscreen_mode();
-    }
-  });
   document.addEventListener('fullscreenchange', sync_menu_fullscreen_mode);
   document.addEventListener('mozfullscreenchange', sync_menu_fullscreen_mode);
   document.addEventListener('webkitfullscreenchange', sync_menu_fullscreen_mode);
@@ -1559,9 +1605,6 @@ function init_menu_fullscreen_mode() {
 
 function sync_menu_fullscreen_mode() {
   if (!document.body.classList.contains('menu-mode')) return;
-  if (!is_fullscreen()) {
-    request_panel_fullscreen(document.getElementById('container'));
-  }
 }
 
 async function play_in_external_vlc(uuid, name, type, forceProfile) {
@@ -1645,7 +1688,7 @@ function init_navigation() {
       ['→', 'Enter page'],
       ['←', 'Menu'],
       ['Enter', 'Select / play'],
-      ['M', 'Menu on/off (VLC stays)']
+      ['M', 'Full menu screen']
     ];
     const kbEl = document.createElement('div');
     kbEl.className = 'nav_keybinds';
@@ -1984,6 +2027,8 @@ function navigate_menu_item(idx) {
 }
 
 function init_menu_keyboard() {
+  if (window._tvh_menu_kb_init) return;
+  window._tvh_menu_kb_init = true;
   nav_items = Array.from(document.querySelectorAll('#navigation .navi'));
   const active = nav_items.findIndex(function(n) { return n.classList.contains('active'); });
   menu_index = active >= 0 ? active : 0;
@@ -1995,7 +2040,7 @@ function init_menu_keyboard() {
   }
 
   document.addEventListener('keydown', function(e) {
-    if (document.body.classList.contains('menu-mode')) return;
+    if (handle_menu_mode_keydown(e)) return;
 
     const editing = content_nav && content_nav.fieldEdit;
 

@@ -477,10 +477,16 @@ body.menu-mode #layout {
 	display: none !important;
 }
 
+body.menu-mode #container {
+	width: 100vw;
+	height: 100vh;
+}
+
 body.menu-mode #navigation {
 	width: 100vw !important;
 	max-width: 100vw;
 	flex: 1;
+	z-index: 100;
 }
 
 body.menu-mode #navigation .nav_bar {
