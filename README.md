@@ -72,7 +72,8 @@ TVHadmin stores user preferences in Local Storage on the client, and uses Sessio
 - Some screens supply extra information as hover text. This is not accessible from mobile clients.
 - Dates and times are shown in the appropriate format for your browser language; if the format is incorrect then check your browser settings. There is no internationalisation of text.
 
-vlc --version
-uname -m
-apt-cache search browser-plugin-vlc
-ls -la /usr/lib/mozilla/plugins/libvlcplugin.so 2>/dev/null
+cd /usr/share/tvheadend/src/webui/static/TVHadmin-JS 
+
+chmod +x scripts/install-vlc-fullscreen-handler.sh
+
+sh scripts/install-vlc-fullscreen-handler.sh
