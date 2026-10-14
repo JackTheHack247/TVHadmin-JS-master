@@ -85,7 +85,9 @@ function set_video_stream_attrs(video, url) {
 }
 
 function is_tvh_stream_url(url) {
-  return /\/stream\/(channel|service|channelid|channelnumber|channelname)\b/i.test(preview_base_url(url));
+  const p = preview_base_url(url);
+  return /\/stream\/(channel|service|channelid|channelnumber|channelname|file)\b/i.test(p) ||
+    /\/play\/ticket\/(stream\/|dvrfile\/)/i.test(p);
 }
 
 function is_live_preview(url, type) {
@@ -161,12 +163,14 @@ function dismiss_vlc_launch_hint() {
 
 function show_vlc_launch_hint(absUrl) {
   dismiss_vlc_launch_hint();
+  const safe = String(absUrl).replace(/&/g, '&amp;').replace(/</g, '&lt;');
   const hint = document.createElement('div');
   hint.id = 'tvh-vlc-hint';
   hint.innerHTML =
     '<div class="tvh-vlc-hint-title">Opening in VLC…</div>' +
-    '<div class="tvh-vlc-hint-text">If nothing opens, run in a terminal:</div>' +
-    '<code class="tvh-vlc-hint-cmd">vlc --fullscreen --one-instance \'' + String(absUrl).replace(/'/g, "'\\''") + '\'</code>' +
+    '<div class="tvh-vlc-hint-text">Network URL (Media → Open Network Stream):</div>' +
+    '<code class="tvh-vlc-hint-cmd">' + safe + '</code>' +
+    '<div class="tvh-vlc-hint-text">Terminal: vlc --fullscreen --one-instance \'' + String(absUrl).replace(/'/g, "'\\''") + '\'</div>' +
     '<button type="button" class="tvh-vlc-hint-close">Dismiss</button>';
   document.body.appendChild(hint);
   hint.querySelector('.tvh-vlc-hint-close').addEventListener('click', dismiss_vlc_launch_hint);
@@ -858,12 +862,18 @@ function preview_alternate_stream_profiles(currentProfile) {
 }
 
 function preview_retry_with_profile(profile) {
-  const video = document.getElementById('live-preview');
   const uuid = sessionStorage.getItem('preview_uuid');
   const name = sessionStorage.getItem('preview_name') || '';
-  if (!video || !uuid || !profile) return;
+  const type = sessionStorage.getItem('preview_type') || 'channel';
+  if (!uuid || !profile) return;
   cookies.SUUID = profile;
   save_settings({ SUUID: profile });
+  if (preview_player_mode() === 'external') {
+    play_in_external_vlc(uuid, name, type, profile);
+    return;
+  }
+  const video = document.getElementById('live-preview');
+  if (!video) return;
   play_preview(video, name, null, 0, uuid, profile);
 }
 
@@ -876,6 +886,66 @@ function build_preview_url(uuid, type, profile) {
   const useProfile = profile || cookies.SUUID;
   if (useProfile) streamUrl += '?profile=' + encodeURIComponent(useProfile);
   return streamUrl;
+}
+
+/** TVHeadend WebUI-style URL — works in VLC “Open network stream” without browser cookies. */
+function build_ticket_play_url(uuid, type, profile, title) {
+  if (!uuid) return null;
+  type = type || 'channel';
+  let path;
+  if (type === 'recording') {
+    path = '/play/ticket/dvrfile/' + uuid;
+  } else {
+    path = '/play/ticket/stream/channel/' + uuid;
+  }
+  const qs = [];
+  if (title) qs.push('title=' + encodeURIComponent(title));
+  const useProfile = profile || cookies.SUUID;
+  if (useProfile) qs.push('profile=' + encodeURIComponent(useProfile));
+  return api_url(path) + (qs.length ? '?' + qs.join('&') : '');
+}
+
+function parse_m3u_stream_url(body) {
+  if (!body || body.indexOf('#EXTM3U') === -1) return null;
+  const lines = body.split(/\r?\n/);
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (line && line.charAt(0) !== '#') return line;
+  }
+  return null;
+}
+
+async function resolve_play_ticket_url(uuid, type, profile, title) {
+  const playUrl = build_ticket_play_url(uuid, type, profile, title);
+  if (!playUrl || !tvh_configured()) return playUrl;
+  const abs = absolute_stream_url(playUrl);
+  try {
+    const response = await fetch(abs, Object.assign({
+      method: 'GET',
+      redirect: 'follow',
+      cache: 'no-store'
+    }, fetch_opts()));
+    if (!response.ok) {
+      log_preview_issue('ticket', 'HTTP ' + response.status, abs);
+      return playUrl;
+    }
+    const ctype = (response.headers.get('content-type') || '').toLowerCase();
+    if (ctype.indexOf('octet-stream') !== -1 || ctype.indexOf('mp2t') !== -1 ||
+        (ctype.indexOf('video') !== -1 && ctype.indexOf('mpegurl') === -1)) {
+      return playUrl;
+    }
+    if (ctype.indexOf('mpegurl') !== -1 || ctype.indexOf('m3u') !== -1 || ctype.indexOf('text') !== -1) {
+      const text = await response.text();
+      const fromM3u = parse_m3u_stream_url(text);
+      if (fromM3u) return fromM3u;
+    }
+    if (response.url && response.url !== abs && /\/stream\//i.test(response.url)) {
+      return response.url;
+    }
+  } catch (e) {
+    log_preview_issue('ticket', 'resolve: ' + (e.message || e), abs);
+  }
+  return playUrl;
 }
 
 function play_preview(video, name, url, seekTime, uuid, forceProfile) {
@@ -1420,7 +1490,8 @@ async function play_in_external_vlc(uuid, name, type, forceProfile) {
   type = type || 'channel';
   var profileName = type !== 'recording' ? pick_vlc_stream_profile(name, uuid) : '';
   if (forceProfile) profileName = forceProfile;
-  const url = build_preview_url(uuid, type, profileName);
+  const title = name || '';
+  const url = await resolve_play_ticket_url(uuid, type, profileName, title);
   if (!url) return;
   store_preview_channel(uuid, name, url, 0, type);
   launch_external_vlc(url, name);
